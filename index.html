@@ -200,9 +200,7 @@ class Player {
         this.targetCenterY = 0;
         
         // Для атаки на врага
-        this.attackingTroops = 0;
-        this.attackTarget = null;
-        this.attackProgress = 0;
+        this.attacks = [];
         
         // Для расширения на свободные территории
         this.expansionQueue = 0;
@@ -215,28 +213,80 @@ class Player {
         this.lastUpdateTime = Date.now();
     }
 
-    update() {
-        if (this.cells.length === 0) return;
-        
-        const now = Date.now();
-        const deltaTime = Math.min((now - this.lastUpdateTime) / 16.67, 2);
-        
-        // Одинаковые правила для всех игроков
-        this.maxTroops = TROOP_LIMIT_BASE + (this.cells.length * 80);
-        
-        // Одинаковая скорость накопления войск для всех
-        if (this.troops < this.maxTroops) {
-            let growth = (this.cells.length * 0.05 + 5) * deltaTime;
-            
-            // Если игрок под атакой, восстанавливается медленнее
-            if (this.isBeingAttacked) {
-                growth *= 0.7; // 70% от нормальной скорости
-            }
-            
-            this.troops = Math.min(this.maxTroops, this.troops + growth);
-        }
-        
-        this.gold += (this.cells.length * 0.1) * deltaTime;
+	update() {
+		if (this.cells.length === 0) return;
+		
+		const now = Date.now();
+		const deltaTime = Math.min((now - this.lastUpdateTime) / 16.67, 2);
+		
+		// Одинаковые правила для всех игроков
+		this.maxTroops = TROOP_LIMIT_BASE + (this.cells.length * 80);
+		
+		// ИСПРАВЛЕННАЯ СКОРОСТЬ ВОССТАНОВЛЕНИЯ ВОЙСК
+		if (this.troops < this.maxTroops) {
+			// Увеличиваем базовую скорость восстановления в зависимости от размера территории
+			let baseGrowthRate = 0.1;
+			let bonusFromTerritory = this.cells.length * 0.0002;
+			let growth = (this.cells.length * (baseGrowthRate + bonusFromTerritory) + 10) * deltaTime;
+			
+			// Если игрок под атакой, восстанавливается медленнее
+			if (this.isBeingAttacked) {
+				growth *= 0.8;
+			}
+			
+			// Эффект неэффективности управления для очень больших стран
+			let inefficiencyFactor = 1.0;
+			if (this.cells.length > 10000) {
+				// Для стран больше 10000 клеток - значительное замедление
+				inefficiencyFactor = 10000 / this.cells.length;
+			} else if (this.cells.length > 5000) {
+				// Для стран больше 5000 клеток - умеренное замедление
+				inefficiencyFactor = 0.7;
+			} else if (this.cells.length > 2000) {
+				// Для стран больше 2000 клеток - легкое замедление
+				inefficiencyFactor = 0.85;
+			}
+
+			// Применяем ко всем процессам (войска, золото, расширение)
+			if (inefficiencyFactor < 1.0) {
+				growth *= inefficiencyFactor;
+			}
+			
+			this.troops = Math.min(this.maxTroops, this.troops + growth);
+		}
+		
+		// Золото с эффектом неэффективности
+		let goldGrowth = (this.cells.length * 0.1) * deltaTime;
+		
+		// Эффект неэффективности управления для золота
+		let goldInefficiencyFactor = 1.0;
+		if (this.cells.length > 10000) {
+			goldInefficiencyFactor = 10000 / this.cells.length;
+		} else if (this.cells.length > 5000) {
+			goldInefficiencyFactor = 0.7;
+		} else if (this.cells.length > 2000) {
+			goldInefficiencyFactor = 0.85;
+		}
+		
+		if (goldInefficiencyFactor < 1.0) {
+			goldGrowth *= goldInefficiencyFactor;
+		}
+		
+		this.gold += goldGrowth;
+		// === КОНЕЦ ДОБАВЛЕНИЯ ДЛЯ ЗОЛОТА ===
+
+		// Обновляем центр игрока
+		if (this.cells.length > 0) {
+			let sumX = 0, sumY = 0;
+			let sampleSize = Math.min(200, this.cells.length);
+			for(let i = 0; i < sampleSize; i++) {
+				let cell = this.cells[Math.floor(i * this.cells.length / sampleSize)];
+				sumX += cell.c;
+				sumY += cell.r;
+			}
+			this.targetCenterX = (sumX / sampleSize) * CELL_SIZE;
+			this.targetCenterY = (sumY / sampleSize) * CELL_SIZE;
+		}
 
         // Обновляем центр игрока
         if (this.cells.length > 0) {
@@ -261,12 +311,11 @@ class Player {
         
         // РАСШИРЕНИЕ НА СВОБОДНЫЕ ТЕРРИТОРИИ - УВЕЛИЧЕНА СКОРОСТЬ
         if (this.expansionQueue > 0 && this.troops > 0) {
-            // УВЕЛИЧИВАЕМ скорость расширения в зависимости от размера очереди
-            let expansionMultiplier = Math.min(this.expansionQueue / 1000, 10); // до 10x скорости
+            let expansionMultiplier = Math.min(this.expansionQueue / 1000, 10);
             let expansionRate = Math.min(this.expansionQueue, this.troops * 0.3 * expansionMultiplier) * deltaTime;
             
             let cellsCaptured = 0;
-            let maxCapturesPerFrame = 50; // Лимит клеток за кадр
+            let maxCapturesPerFrame = 50;
             
             for(let attempt = 0; attempt < expansionRate && cellsCaptured < maxCapturesPerFrame; attempt++) {
                 if (this.cells.length === 0 || this.expansionQueue <= 0 || this.troops <= 0) break;
@@ -291,7 +340,7 @@ class Player {
                             this.capture(nr, nc);
                             cellsCaptured++;
                             
-                            let cost = 0.05; // Уменьшена стоимость
+                            let cost = 0.05;
                             this.troops -= cost;
                             this.expansionQueue -= 1;
                             
@@ -304,107 +353,86 @@ class Player {
             this.lastExpansionTime = now;
         }
         
-        // АТАКА НА ВРАГА - СИЛЬНО УВЕЛИЧЕНА СКОРОСТЬ ЗАХВАТА
-        if (this.attackingTroops > 0 && this.attackTarget !== null) {
-            let enemy = players[this.attackTarget];
+        // АТАКА НА ВРАГОВ (МНОЖЕСТВЕННЫЕ АТАКИ)
+        for (let i = this.attacks.length - 1; i >= 0; i--) {
+            let attack = this.attacks[i];
+            let enemy = players[attack.target];
             
-            if (enemy && enemy.cells.length > 0) {
-                enemy.isBeingAttacked = true;
-                
-                // Рассчитываем соотношение сил
-                let powerRatio = this.attackingTroops / Math.max(1, enemy.troops);
-                let ourLossRate = 0.0;
-                let enemyLossRate = 0.0;
-                
-                if (powerRatio < 0.5) {
-                    ourLossRate = 0.04 * deltaTime;
-                    enemyLossRate = 0.005 * deltaTime;
-                } else if (powerRatio < 1.0) {
-                    ourLossRate = 0.02 * deltaTime;
-                    enemyLossRate = 0.01 * deltaTime;
-                } else if (powerRatio < 2.0) {
-                    ourLossRate = 0.01 * deltaTime;
-                    enemyLossRate = 0.015 * deltaTime;
-                } else if (powerRatio < 5.0) {
-                    ourLossRate = 0.005 * deltaTime;
-                    enemyLossRate = 0.02 * deltaTime;
-                } else {
-                    // При ОГРОМНОМ преимуществе (5:1 и более)
-                    ourLossRate = 0.001 * deltaTime;
-                    enemyLossRate = 0.05 * deltaTime;
-                }
-                
-                // Применяем потери
-                this.attackingTroops -= this.attackingTroops * ourLossRate;
-                enemy.troops -= enemy.troops * enemyLossRate;
-                
-                // ЗАХВАТ ТЕРРИТОРИИ - СИЛЬНО УВЕЛИЧЕНА СКОРОСТЬ
-                let captureChance = Math.min(powerRatio * 0.8, 0.95); // Увеличена базовая вероятность
-                
-                // Множитель скорости захвата в зависимости от преимущества
-                let captureSpeedMultiplier = 1;
-                if (powerRatio > 3) captureSpeedMultiplier = 3;
-                if (powerRatio > 5) captureSpeedMultiplier = 5;
-                if (powerRatio > 10) captureSpeedMultiplier = 10;
-                if (powerRatio > 20) captureSpeedMultiplier = 20;
-                
-                // Количество попыток захвата за кадр
-                let captureAttempts = Math.floor(captureSpeedMultiplier * deltaTime * 5);
-                captureAttempts = Math.min(captureAttempts, 50); // Лимит 50 попыток за кадр
-                
-                let capturedThisFrame = 0;
-                for (let i = 0; i < captureAttempts; i++) {
-                    if (Math.random() < captureChance * deltaTime) {
-                        if (this.captureEnemyTerritory(enemy)) {
-                            capturedThisFrame++;
-                            this.attackProgress += 0.001 * captureSpeedMultiplier; // Ускоренный прогресс
-                        }
+            if (!enemy || enemy.cells.length === 0) {
+                // Враг уничтожен, возвращаем оставшиеся войска
+                this.troops += attack.troops * 0.5;
+                this.attacks.splice(i, 1);
+                continue;
+            }
+            
+            enemy.isBeingAttacked = true;
+            
+            // Рассчитываем соотношение сил для этой атаки
+            let powerRatio = attack.troops / Math.max(1, enemy.troops);
+            let ourLossRate = 0.0;
+            let enemyLossRate = 0.0;
+            
+            if (powerRatio < 0.5) {
+                ourLossRate = 0.04 * deltaTime;
+                enemyLossRate = 0.005 * deltaTime;
+            } else if (powerRatio < 1.0) {
+                ourLossRate = 0.02 * deltaTime;
+                enemyLossRate = 0.01 * deltaTime;
+            } else if (powerRatio < 2.0) {
+                ourLossRate = 0.01 * deltaTime;
+                enemyLossRate = 0.015 * deltaTime;
+            } else if (powerRatio < 5.0) {
+                ourLossRate = 0.005 * deltaTime;
+                enemyLossRate = 0.02 * deltaTime;
+            } else {
+                // При ОГРОМНОМ преимуществе (5:1 и более)
+                ourLossRate = 0.001 * deltaTime;
+                enemyLossRate = 0.05 * deltaTime;
+            }
+            
+            // Применяем потери
+            attack.troops -= attack.troops * ourLossRate;
+            enemy.troops -= enemy.troops * enemyLossRate;
+            
+            // ЗАХВАТ ТЕРРИТОРИИ - УВЕЛИЧЕННАЯ ЭФФЕКТИВНОСТЬ
+            let captureChance = Math.min(powerRatio * 1.2, 0.99);
+            
+            // Количество попыток захвата за кадр
+            let captureAttempts = Math.floor(8 * deltaTime);
+            captureAttempts = Math.min(captureAttempts, 20);
+            
+            let capturedThisFrame = 0;
+            for (let j = 0; j < captureAttempts; j++) {
+                if (Math.random() < captureChance * deltaTime) {
+                    if (this.captureEnemyTerritory(enemy)) {
+                        capturedThisFrame++;
+                        attack.progress += 0.005;
                     }
                 }
+            }
+            
+            // МАССОВЫЙ ЗАХВАТ при большом преимуществе
+            if (powerRatio > 3) {
+                let multiCapture = Math.floor(powerRatio / 3);
+                multiCapture = Math.min(multiCapture, 5);
                 
-                // Если захватили много клеток за кадр, дополнительно увеличиваем прогресс
-                if (capturedThisFrame > 0) {
-                    this.attackProgress += 0.005 * capturedThisFrame;
-                }
-                
-                // Обновляем прогресс атаки
-                if (this.initialAttackTroops > 0) {
-                    let currentProgress = Math.max(0, 1 - (this.attackingTroops / this.initialAttackTroops));
-                    // Плавное обновление прогресса
-                    this.attackProgress = Math.min(1, this.attackProgress * 0.9 + currentProgress * 0.1);
-                }
-                
-                // Если враг уничтожен
-                if (enemy && enemy.troops <= 5 && enemy.cells.length > 0) {
-                    // Быстрый захват всех оставшихся клеток
-                    let cellsToCapture = enemy.cells.length;
-                    for (let i = 0; i < Math.min(cellsToCapture, 100); i++) {
-                        if (enemy.cells.length > 0) {
-                            let cell = enemy.cells[0];
-                            this.capture(cell.r, cell.c);
-                        }
+                for (let j = 0; j < multiCapture; j++) {
+                    if (Math.random() < 0.7) {
+                        this.captureEnemyTerritory(enemy);
                     }
-                    
-                    if (this.attackingTroops > 0) {
-                        this.troops += this.attackingTroops * 0.8;
-                        this.attackingTroops = 0;
-                        this.initialAttackTroops = 0;
-                    }
-                    this.attackTarget = null;
-                    this.attackProgress = 0;
-                    return;
                 }
-
-                // Если наши атакующие войска закончились
-                if (this.attackingTroops <= 5) {
-                    if (this.attackingTroops > 0) {
-                        this.troops += this.attackingTroops * 0.5;
-                    }
-                    this.attackingTroops = 0;
-                    this.initialAttackTroops = 0;
-                    this.attackTarget = null;
-                    this.attackProgress = 0;
-                }
+            }
+            
+            // Обновляем прогресс атаки
+            if (attack.initialTroops > 0) {
+                let currentProgress = Math.max(0, 1 - (attack.troops / attack.initialTroops));
+                attack.progress = Math.min(1, attack.progress * 0.9 + currentProgress * 0.1);
+            }
+            
+            // Если атакующие войска закончились
+            if (attack.troops <= 5) {
+                this.troops += attack.troops * 0.5;
+                this.attacks.splice(i, 1);
             }
         }
         
@@ -416,11 +444,7 @@ class Player {
                 let budget = Math.min(200 + Math.random() * 200, this.troops * 0.2);
                 if (budget > 20) {
                     this.troops -= budget;
-                    this.attackingTroops = budget;
-                    this.initialAttackTroops = budget;
-                    this.attackTarget = enemy.id;
-                    this.attackProgress = 0;
-                    this.waveAnimation = 0;
+                    this.startAttack(enemy.id, budget);
                     this.lastExpansionTime = now;
                 }
             } else if (this.troops > this.maxTroops * 0.3) {
@@ -437,18 +461,20 @@ class Player {
         if (this.isBeingAttacked && this.troops > 50 && Math.random() < 0.02 * deltaTime) {
             for (let i = 0; i < players.length; i++) {
                 let attacker = players[i];
-                if (attacker && attacker.attackTarget === this.id && attacker.attackingTroops > 0) {
-                    let counterRatio = this.troops / Math.max(1, attacker.attackingTroops);
-                    
-                    if (counterRatio > 0.5) {
-                        let counterPower = Math.min(this.troops * 0.15, attacker.attackingTroops * 0.8);
-                        if (counterPower > 10) {
-                            this.troops -= counterPower;
-                            this.attackingTroops = counterPower;
-                            this.attackTarget = attacker.id;
-                            this.attackProgress = 0;
-                            this.waveAnimation = 0;
-                            break;
+                if (attacker && attacker.attacks) {
+                    // Проверяем все атаки этого игрока
+                    for (let attack of attacker.attacks) {
+                        if (attack.target === this.id && attack.troops > 0) {
+                            let counterRatio = this.troops / Math.max(1, attack.troops);
+                            
+                            if (counterRatio > 0.5) {
+                                let counterPower = Math.min(this.troops * 0.15, attack.troops * 0.8);
+                                if (counterPower > 10) {
+                                    this.troops -= counterPower;
+                                    this.startAttack(attacker.id, counterPower);
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -548,25 +574,56 @@ class Player {
         }
     }
     
-    captureEnemyTerritory(enemy) {
-        if (!enemy || enemy.cells.length === 0) return false;
+	captureEnemyTerritory(enemy) {
+		if (!enemy || enemy.cells.length === 0) return false;
+		
+		// Приоритет 1: Ищем клетки на границе
+		let borderCells = this.findBorderCellsWithEnemy(enemy);
+		
+		// ДЕБАГ: покажем сколько граничных клеток найдено
+		if (borderCells.length > 0 && this.id === 0) {
+			console.log(`Найдено граничных клеток: ${borderCells.length}`);
+		}
+		
+		if (borderCells.length > 0) {
+			// Выбираем случайную граничную клетку
+			let targetCell = borderCells[Math.floor(Math.random() * borderCells.length)];
+			
+			// Проверяем, что клетка еще принадлежит врагу
+			if (grid[targetCell.r][targetCell.c].owner === enemy.id) {
+				this.capture(targetCell.r, targetCell.c);
+				
+				// ДЕБАГ: покажем информацию о захвате
+				if (this.id === 0) {
+					console.log(`Захвачена клетка: (${targetCell.r}, ${targetCell.c}) у врага ${enemy.name}`);
+				}
+				return true;
+			}
+		}
+		
+		return false;
+	}
+	
+	    startAttack(enemyId, budget) {
+        // Проверяем, не атакуем ли мы уже этого врага
+        let existingAttack = this.attacks.find(a => a.target === enemyId);
         
-        // Ищем граничные клетки
-        let borderCells = this.findBorderCellsWithEnemy(enemy);
-        
-        // Если есть граничащие клетки, захватываем случайную
-        if (borderCells.length > 0) {
-            let randomIndex = Math.floor(Math.random() * borderCells.length);
-            let targetCell = borderCells[randomIndex];
-            
-            // Проверяем, что клетка еще принадлежит врагу
-            if (grid[targetCell.r][targetCell.c].owner === enemy.id) {
-                this.capture(targetCell.r, targetCell.c);
-                return true;
-            }
+        if (existingAttack) {
+            // Усиливаем существующую атаку
+            existingAttack.troops += budget;
+            existingAttack.initialTroops += budget;
+            return existingAttack;
+        } else {
+            // Начинаем новую атаку
+            let newAttack = {
+                target: enemyId,
+                troops: budget,
+                progress: 0,
+                initialTroops: budget
+            };
+            this.attacks.push(newAttack);
+            return newAttack;
         }
-        
-        return false;
     }
 
     capture(r, c) {
@@ -577,10 +634,6 @@ class Player {
                 prev.cells = prev.cells.filter(i => i.r !== r || i.c !== c);
                 if (prev.cells.length === 0) {
                     players[prev.id] = null;
-                }
-                
-                if (this.attackTarget === cell.owner) {
-                    this.totalCapturedInAttack++;
                 }
             }
         }
@@ -721,7 +774,11 @@ function updateAttackTroopsInfo() {
 
 function updateAttackingTroopsBar() {
     if (players[0]) {
-        let attacking = players[0].attackingTroops;
+        let attacking = 0;
+        if (players[0].attacks) {
+            attacking = players[0].attacks.reduce((sum, attack) => sum + attack.troops, 0);
+        }
+        
         let total = players[0].troops + attacking;
         let percent = total > 0 ? (attacking / total) * 100 : 0;
         
@@ -895,6 +952,7 @@ window.addEventListener('mouseup', function(e) {
                 let cell = grid[r][c];
                 
                 if (cell.owner === null) {
+                    // Расширение на свободную территорию
                     let budget = p.troops * (slider.value / 100);
                     if (budget > 10) {
                         p.troops -= budget;
@@ -936,37 +994,13 @@ window.addEventListener('mouseup', function(e) {
                             // ПРОВЕРКА: можно ли атаковать врага с текущими силами
                             let budget = p.troops * (slider.value / 100);
                             
-                            // Соотношение сил для атаки - СРАВНИВАЕМ НАШИ ВОЙСКА С ВОЙСКАМИ ВРАГА
-                            let powerRatio = budget / Math.max(1, enemy.troops);
-                            
                             if (budget > 10) {
-                                // Если уже есть атака на этого врага, добавляем войска
-								if (p.attackTarget === cell.owner) {
-									// Добавляем войска к существующей атаке
-									p.troops -= budget;
-									p.attackingTroops += budget;
-									p.initialAttackTroops += budget; // ОБНОВИТЬ начальное количество
-									statusEl.innerText = `ПОДКРЕПЛЕНИЕ! АТАКА НА ${enemy.name}`;
-								} else {
-									// Новая атака
-									if (p.attackingTroops > 0 && p.attackTarget !== null) {
-										// Возвращаем предыдущие атакующие войска
-										p.troops += p.attackingTroops * 0.7;
-										p.attackingTroops = 0;
-										p.initialAttackTroops = 0;
-									}
-									
-									p.troops -= budget;
-									p.attackingTroops = budget;
-									p.initialAttackTroops = budget; // ЗАПОМНИТЬ начальное количество
-									p.totalCapturedInAttack = 0;
-									p.attackTarget = cell.owner;
-									p.attackProgress = 0;
-									p.waveAnimation = 0;
-									
-									statusEl.innerText = `АТАКА НА ${enemy.name}`;
-								}
-                                currentAttack = {r, c};
+                                // НОВЫЙ КОД: Используем метод startAttack из класса Player
+                                p.troops -= budget;
+                                p.startAttack(enemy.id, budget);
+                                statusEl.innerText = `АТАКА НА ${enemy.name}`;
+                            } else {
+                                statusEl.innerText = "НЕДОСТАТОЧНО ВОЙСК ДЛЯ АТАКИ";
                             }
                         } else {
                             statusEl.innerText = "ВРАГ НЕ ГРАНИЧИТ С ВАМИ";
@@ -1030,17 +1064,19 @@ function update() {
             updateAttackTroopsInfo();
             updateAttackingTroopsBar();
             
-            if (players[0].attackingTroops > 0) {
-                let progress = players[0].attackProgress;
-                attackProgressBar.style.width = (progress * 100) + '%';
-            } else if (players[0].expansionQueue > 0) {
-                attackProgressBar.style.width = '50%';
-            } else {
-                attackProgressBar.style.width = '0%';
-                if (statusEl.innerText.includes("АТАКА") || statusEl.innerText.includes("РАСШИРЕНИЕ")) {
-                    statusEl.innerText = "ГЛОБАЛЬНАЯ ЭКСПАНСИЯ";
-                }
-            }
+			if (players[0].attacks && players[0].attacks.length > 0) {
+				// Средний прогресс по всем атакам
+				let totalProgress = players[0].attacks.reduce((sum, attack) => sum + attack.progress, 0);
+				let avgProgress = totalProgress / players[0].attacks.length;
+				attackProgressBar.style.width = (avgProgress * 100) + '%';
+			} else if (players[0].expansionQueue > 0) {
+				attackProgressBar.style.width = '50%';
+			} else {
+				attackProgressBar.style.width = '0%';
+				if (statusEl.innerText.includes("АТАКА") || statusEl.innerText.includes("РАСШИРЕНИЕ")) {
+					statusEl.innerText = "ГЛОБАЛЬНАЯ ЭКСПАНСИЯ";
+				}
+			}
         }
     }
     
@@ -1186,4 +1222,3 @@ update();
 </script>
 </body>
 </html>
-
