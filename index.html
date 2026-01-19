@@ -1057,41 +1057,68 @@ function draw() {
     ctx.translate(Math.floor(cam.x), Math.floor(cam.y));
     ctx.scale(cam.zoom, cam.zoom);
     
-    // Отключаем сглаживание
+    // ВАЖНО: отключаем сглаживание
     ctx.imageSmoothingEnabled = false;
+    ctx.mozImageSmoothingEnabled = false;
+    ctx.webkitImageSmoothingEnabled = false;
+    ctx.msImageSmoothingEnabled = false;
     
-    // Рисуем воду
+    // Рисуем воду - без зазоров
     ctx.fillStyle = BIOMES.water;
-    ctx.fillRect(0, 0, COLS * CELL_SIZE, ROWS * CELL_SIZE);
+    // Заполняем всю область карты
+    ctx.fillRect(-1, -1, COLS * CELL_SIZE + 2, ROWS * CELL_SIZE + 2);
     
-    // Рисуем землю и территории
+    // Используем ОДИНАКОВЫЙ подход для всех случаев
+    // Создаем отдельный холст для земли и игроков для устранения зазоров
+    let landCanvas = document.createElement('canvas');
+    landCanvas.width = COLS * CELL_SIZE;
+    landCanvas.height = ROWS * CELL_SIZE;
+    let landCtx = landCanvas.getContext('2d');
+    
+    // Отключаем сглаживание на отдельном холсте
+    landCtx.imageSmoothingEnabled = false;
+    landCtx.mozImageSmoothingEnabled = false;
+    landCtx.webkitImageSmoothingEnabled = false;
+    landCtx.msImageSmoothingEnabled = false;
+    
+    // Сначала рисуем всю свободную землю
     for (let r = 0; r < ROWS; r++) {
         for (let c = 0; c < COLS; c++) {
             const cell = grid[r][c];
-            
             if (cell.type !== 'water') {
-                // Определяем цвет
-                if (cell.owner === null) {
-                    ctx.fillStyle = BIOMES[cell.type];
-                } else {
-                    // ИСПРАВЛЕНИЕ: Проверяем, что игрок существует и не null
-                    let player = players[cell.owner];
-                    if (player && player.color) {
-                        ctx.fillStyle = player.color;
-                    } else {
-                        ctx.fillStyle = BIOMES[cell.type];
-                    }
-                }
-                
-                // Округляем координаты до целых чисел, чтобы избежать линий
-                const x = Math.round(c * CELL_SIZE);
-                const y = Math.round(r * CELL_SIZE);
-                ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
+                landCtx.fillStyle = BIOMES[cell.type];
+                landCtx.fillRect(
+                    c * CELL_SIZE, 
+                    r * CELL_SIZE, 
+                    CELL_SIZE, 
+                    CELL_SIZE
+                );
             }
         }
     }
     
-    // Показываем спавны ботов до начала игры
+    // Затем рисуем территории игроков поверх свободной земли
+    if (!preStart) {
+        for (let i = 0; i < players.length; i++) {
+            let p = players[i];
+            if (p && p.cells.length > 0) {
+                landCtx.fillStyle = p.color;
+                
+                for (let j = 0; j < p.cells.length; j++) {
+                    let cell = p.cells[j];
+                    // Используем целочисленные координаты
+                    let x = Math.floor(cell.c * CELL_SIZE);
+                    let y = Math.floor(cell.r * CELL_SIZE);
+                    landCtx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
+                }
+            }
+        }
+    }
+    
+    // Рисуем объединенный холст на основном канвасе
+    ctx.drawImage(landCanvas, 0, 0);
+    
+    // В режиме preStart показываем спавны ботов
     if (preStart) {
         botSpawns.forEach(s => {
             ctx.beginPath();
@@ -1103,12 +1130,21 @@ function draw() {
         });
     }
     
-    // Рисуем имена игроков
+    // Рисуем имена игроков (только после начала игры)
     if (!preStart) {
         for (let i = 0; i < players.length; i++) {
             let p = players[i];
             if (p && p.cells.length > 30) {
                 let fSize = Math.max(12, 18 / cam.zoom);
+                
+                // Плавное обновление позиции
+                let displayX = p.centerX;
+                let displayY = p.centerY;
+                
+                // Интерполяция для плавности
+                if (Date.now() - lastNickUpdateTime > 100) {
+                    lastNickUpdateTime = Date.now();
+                }
                 
                 ctx.save();
                 ctx.fillStyle = "white";
@@ -1117,19 +1153,19 @@ function draw() {
                 ctx.strokeStyle = "black";
                 ctx.lineWidth = 4 / cam.zoom;
                 
-                let screenX = p.centerX;
-                let screenY = p.centerY - (fSize * 1.5);
+                let screenX = displayX;
+                let screenY = displayY - (fSize * 1.5);
                 
                 if (screenX > -50 && screenX < COLS * CELL_SIZE + 50 && 
                     screenY > -50 && screenY < ROWS * CELL_SIZE + 50) {
-                    // Имя игрока
                     ctx.strokeText(p.name, screenX, screenY);
                     ctx.fillText(p.name, screenX, screenY);
                     
                     // Войска под ником
                     ctx.font = `${fSize * 0.7}px monospace`;
-                    ctx.strokeText(formatNum(p.troops), screenX, screenY + (fSize * 1.2));
-                    ctx.fillText(formatNum(p.troops), screenX, screenY + (fSize * 1.2));
+                    let displayTroops = Math.round(p.troops);
+                    ctx.strokeText(formatNum(displayTroops), screenX, screenY + (fSize * 1.2));
+                    ctx.fillText(formatNum(displayTroops), screenX, screenY + (fSize * 1.2));
                 }
                 ctx.restore();
             }
@@ -1150,3 +1186,4 @@ update();
 </script>
 </body>
 </html>
+
