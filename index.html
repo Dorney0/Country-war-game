@@ -192,8 +192,8 @@ class Player {
         this.gold = 0; 
         this.cells = [];
         this.maxTroops = TROOP_LIMIT_BASE;
-		this.initialAttackTroops = 0;
-		this.totalCapturedInAttack = 0;
+        this.initialAttackTroops = 0;
+        this.totalCapturedInAttack = 0;
         this.centerX = 0; 
         this.centerY = 0;
         this.targetCenterX = 0; 
@@ -259,12 +259,16 @@ class Player {
         // Сбрасываем статус атаки
         this.isBeingAttacked = false;
         
-        // РАСШИРЕНИЕ НА СВОБОДНЫЕ ТЕРРИТОРИИ
+        // РАСШИРЕНИЕ НА СВОБОДНЫЕ ТЕРРИТОРИИ - УВЕЛИЧЕНА СКОРОСТЬ
         if (this.expansionQueue > 0 && this.troops > 0) {
-            let expansionRate = Math.min(this.expansionQueue, this.troops * 0.1) * deltaTime;
-            let cellsCaptured = 0;
+            // УВЕЛИЧИВАЕМ скорость расширения в зависимости от размера очереди
+            let expansionMultiplier = Math.min(this.expansionQueue / 1000, 10); // до 10x скорости
+            let expansionRate = Math.min(this.expansionQueue, this.troops * 0.3 * expansionMultiplier) * deltaTime;
             
-            for(let attempt = 0; attempt < expansionRate; attempt++) {
+            let cellsCaptured = 0;
+            let maxCapturesPerFrame = 50; // Лимит клеток за кадр
+            
+            for(let attempt = 0; attempt < expansionRate && cellsCaptured < maxCapturesPerFrame; attempt++) {
                 if (this.cells.length === 0 || this.expansionQueue <= 0 || this.troops <= 0) break;
                 
                 let randomCell = this.cells[Math.floor(Math.random() * this.cells.length)];
@@ -287,7 +291,7 @@ class Player {
                             this.capture(nr, nc);
                             cellsCaptured++;
                             
-                            let cost = 0.1;
+                            let cost = 0.05; // Уменьшена стоимость
                             this.troops -= cost;
                             this.expansionQueue -= 1;
                             
@@ -300,177 +304,157 @@ class Player {
             this.lastExpansionTime = now;
         }
         
-		// АТАКА НА ВРАГА - НОВАЯ ПРАВИЛЬНАЯ ЛОГИКА
-		if (this.attackingTroops > 0 && this.attackTarget !== null) {
-			let enemy = players[this.attackTarget];
-			if (!enemy || enemy.cells.length === 0) {
-				if (this.attackingTroops > 0) {
-					this.troops += this.attackingTroops * 0.7;
-					this.attackingTroops = 0;
-				}
-				this.attackTarget = null;
-				this.attackProgress = 0;
-				return;
-			}
-			
-			// Помечаем врага как находящегося под атакой
-			enemy.isBeingAttacked = true;
-			
-			// СРАВНИВАЕМ ВЫПУЩЕННЫЕ ВОЙСКА С ТЕКУЩИМИ ВОЙСКАМИ ВРАГА
-			let powerRatio = this.attackingTroops / Math.max(1, enemy.troops);
-			
-			// ВИЗУАЛЬНЫЕ ЭФФЕКТЫ АТАКИ
-			this.waveAnimation += 0.02 * deltaTime;
-			
-			if (now - this.lastWaveTime > 800) {
-				this.createAttackWaveEffect(enemy);
-				this.lastWaveTime = now;
-			}
-			
-			// ЗАХВАТ ТЕРРИТОРИИ ВРАГА - пропорционально соотношению сил
-			// Рассчитываем, сколько клеток можем захватить за этот кадр
-			// Каждые 20 атакующих войск могут захватить 1 клетку за кадр
-			let cellsToCapture = Math.floor(this.attackingTroops * 0.05 * deltaTime);
-			cellsToCapture = Math.max(1, cellsToCapture); // Минимум 1 попытка захвата
+        // АТАКА НА ВРАГА - СИЛЬНО УВЕЛИЧЕНА СКОРОСТЬ ЗАХВАТА
+        if (this.attackingTroops > 0 && this.attackTarget !== null) {
+            let enemy = players[this.attackTarget];
+            
+            if (enemy && enemy.cells.length > 0) {
+                enemy.isBeingAttacked = true;
+                
+                // Рассчитываем соотношение сил
+                let powerRatio = this.attackingTroops / Math.max(1, enemy.troops);
+                let ourLossRate = 0.0;
+                let enemyLossRate = 0.0;
+                
+                if (powerRatio < 0.5) {
+                    ourLossRate = 0.04 * deltaTime;
+                    enemyLossRate = 0.005 * deltaTime;
+                } else if (powerRatio < 1.0) {
+                    ourLossRate = 0.02 * deltaTime;
+                    enemyLossRate = 0.01 * deltaTime;
+                } else if (powerRatio < 2.0) {
+                    ourLossRate = 0.01 * deltaTime;
+                    enemyLossRate = 0.015 * deltaTime;
+                } else if (powerRatio < 5.0) {
+                    ourLossRate = 0.005 * deltaTime;
+                    enemyLossRate = 0.02 * deltaTime;
+                } else {
+                    // При ОГРОМНОМ преимуществе (5:1 и более)
+                    ourLossRate = 0.001 * deltaTime;
+                    enemyLossRate = 0.05 * deltaTime;
+                }
+                
+                // Применяем потери
+                this.attackingTroops -= this.attackingTroops * ourLossRate;
+                enemy.troops -= enemy.troops * enemyLossRate;
+                
+                // ЗАХВАТ ТЕРРИТОРИИ - СИЛЬНО УВЕЛИЧЕНА СКОРОСТЬ
+                let captureChance = Math.min(powerRatio * 0.8, 0.95); // Увеличена базовая вероятность
+                
+                // Множитель скорости захвата в зависимости от преимущества
+                let captureSpeedMultiplier = 1;
+                if (powerRatio > 3) captureSpeedMultiplier = 3;
+                if (powerRatio > 5) captureSpeedMultiplier = 5;
+                if (powerRatio > 10) captureSpeedMultiplier = 10;
+                if (powerRatio > 20) captureSpeedMultiplier = 20;
+                
+                // Количество попыток захвата за кадр
+                let captureAttempts = Math.floor(captureSpeedMultiplier * deltaTime * 5);
+                captureAttempts = Math.min(captureAttempts, 50); // Лимит 50 попыток за кадр
+                
+                let capturedThisFrame = 0;
+                for (let i = 0; i < captureAttempts; i++) {
+                    if (Math.random() < captureChance * deltaTime) {
+                        if (this.captureEnemyTerritory(enemy)) {
+                            capturedThisFrame++;
+                            this.attackProgress += 0.001 * captureSpeedMultiplier; // Ускоренный прогресс
+                        }
+                    }
+                }
+                
+                // Если захватили много клеток за кадр, дополнительно увеличиваем прогресс
+                if (capturedThisFrame > 0) {
+                    this.attackProgress += 0.005 * capturedThisFrame;
+                }
+                
+                // Обновляем прогресс атаки
+                if (this.initialAttackTroops > 0) {
+                    let currentProgress = Math.max(0, 1 - (this.attackingTroops / this.initialAttackTroops));
+                    // Плавное обновление прогресса
+                    this.attackProgress = Math.min(1, this.attackProgress * 0.9 + currentProgress * 0.1);
+                }
+                
+                // Если враг уничтожен
+                if (enemy && enemy.troops <= 5 && enemy.cells.length > 0) {
+                    // Быстрый захват всех оставшихся клеток
+                    let cellsToCapture = enemy.cells.length;
+                    for (let i = 0; i < Math.min(cellsToCapture, 100); i++) {
+                        if (enemy.cells.length > 0) {
+                            let cell = enemy.cells[0];
+                            this.capture(cell.r, cell.c);
+                        }
+                    }
+                    
+                    if (this.attackingTroops > 0) {
+                        this.troops += this.attackingTroops * 0.8;
+                        this.attackingTroops = 0;
+                        this.initialAttackTroops = 0;
+                    }
+                    this.attackTarget = null;
+                    this.attackProgress = 0;
+                    return;
+                }
 
-			// Оба игрока теряют войска пропорционально силе противника
-			let ourLossRate = 0.0;
-			let enemyLossRate = 0.0;
-
-			if (powerRatio < 0.5) {
-				// Если враг в 2+ раза сильнее, наши потери очень высокие
-				ourLossRate = 0.04 * deltaTime;
-				enemyLossRate = 0.005 * deltaTime;
-			} else if (powerRatio < 1.0) {
-				// Если враг сильнее, но не в 2 раза
-				ourLossRate = 0.02 * deltaTime;
-				enemyLossRate = 0.01 * deltaTime;
-			} else if (powerRatio < 2.0) {
-				// Если мы немного сильнее
-				ourLossRate = 0.01 * deltaTime;
-				enemyLossRate = 0.015 * deltaTime;
-			} else {
-				// Если мы в 2+ раза сильнее
-				ourLossRate = 0.005 * deltaTime;
-				enemyLossRate = 0.02 * deltaTime;
-			}
-
-			// Применяем потери
-			this.attackingTroops -= this.attackingTroops * ourLossRate;
-			enemy.troops -= enemy.troops * enemyLossRate;
-
-			// Захват территории с учетом соотношения сил
-			// Если у нас преимущество (powerRatio >= 1), захватываем больше клеток
-			// Если у нас недостаток сил (powerRatio < 1), захватываем меньше клеток
-			let captureMultiplier = Math.min(powerRatio, 3); // Ограничиваем множитель
-			let successfulCaptures = 0;
-
-			for(let i = 0; i < cellsToCapture * captureMultiplier; i++) {
-				if (this.attackingTroops <= 5 || enemy.cells.length === 0) break;
-				
-				// Вероятность успешного захвата зависит от соотношения сил
-				let captureChance = Math.min(powerRatio * 0.7, 0.95);
-				
-				if (Math.random() < captureChance) {
-					if (this.captureEnemyTerritory(enemy)) {
-						successfulCaptures++;
-						// Теряем войска при захвате (меньше, чем при боях)
-						this.attackingTroops -= 0.3;
-					}
-				}
-			}
-
-			// Если захватывали территории, немного увеличиваем прогресс атаки
-			if (successfulCaptures > 0) {
-				this.attackProgress += (successfulCaptures / enemy.cells.length) * 0.1;
-				// Защищаем прогресс от превышения 100%
-				this.attackProgress = Math.min(this.attackProgress, 1);
-			}
-			
-			// Обновляем прогресс атаки (сколько выпущенных войск осталось)
-			if (this.initialAttackTroops > 0) {
-				this.attackProgress = Math.max(0, 1 - (this.attackingTroops / this.initialAttackTroops));
-			}
-			
-			// Если наши атакующие войска закончились
-			if (this.attackingTroops <= 5) {
-				// Возвращаем остатки (если есть) с потерями
-				if (this.attackingTroops > 0) {
-					this.troops += this.attackingTroops * 0.5;
-				}
-				this.attackingTroops = 0;
-				this.initialAttackTroops = 0;
-				this.attackTarget = null;
-				this.attackProgress = 0;
-			}
-			
-			// Если враг уничтожен
-			if (enemy.troops <= 5 && enemy.cells.length > 0) {
-				// Захватываем все оставшиеся клетки врага
-				while (enemy.cells.length > 0) {
-					let cell = enemy.cells[0];
-					this.capture(cell.r, cell.c);
-				}
-				// Возвращаем оставшиеся атакующие войска
-				if (this.attackingTroops > 0) {
-					this.troops += this.attackingTroops * 0.8;
-					this.attackingTroops = 0;
-					this.initialAttackTroops = 0;
-				}
-				this.attackTarget = null;
-				this.attackProgress = 0;
-			}
-		}
+                // Если наши атакующие войска закончились
+                if (this.attackingTroops <= 5) {
+                    if (this.attackingTroops > 0) {
+                        this.troops += this.attackingTroops * 0.5;
+                    }
+                    this.attackingTroops = 0;
+                    this.initialAttackTroops = 0;
+                    this.attackTarget = null;
+                    this.attackProgress = 0;
+                }
+            }
+        }
         
         // БОТЫ РАСШИРЯЮТСЯ И АТАКУЮТ
-		if (this.isBot && now - this.lastExpansionTime > 1000) {
-			// Боты атакуют только если у них значительное преимущество
-			let enemy = this.findWeakestEnemy();
-			if (enemy && this.troops > enemy.troops * 1.8) { // Только при 1.8x преимуществе
-				let budget = Math.min(200 + Math.random() * 200, this.troops * 0.2);
-				if (budget > 20) {
-					this.troops -= budget;
-					this.attackingTroops = budget;
-					this.initialAttackTroops = budget;
-					this.attackTarget = enemy.id;
-					this.attackProgress = 0;
-					this.waveAnimation = 0;
-					this.lastExpansionTime = now;
-				}
-			} else if (this.troops > this.maxTroops * 0.3) {
-				let budget = Math.min(100 + Math.random() * 200, this.troops * 0.1);
-				if (budget > 10) {
-					this.troops -= budget;
-					this.expansionQueue += budget;
-					this.lastExpansionTime = now;
-				}
-			}
-		}
+        if (this.isBot && now - this.lastExpansionTime > 1000) {
+            // Боты атакуют только если у них значительное преимущество
+            let enemy = this.findWeakestEnemy();
+            if (enemy && this.troops > enemy.troops * 1.8) {
+                let budget = Math.min(200 + Math.random() * 200, this.troops * 0.2);
+                if (budget > 20) {
+                    this.troops -= budget;
+                    this.attackingTroops = budget;
+                    this.initialAttackTroops = budget;
+                    this.attackTarget = enemy.id;
+                    this.attackProgress = 0;
+                    this.waveAnimation = 0;
+                    this.lastExpansionTime = now;
+                }
+            } else if (this.troops > this.maxTroops * 0.3) {
+                let budget = Math.min(100 + Math.random() * 200, this.troops * 0.1);
+                if (budget > 10) {
+                    this.troops -= budget;
+                    this.expansionQueue += budget;
+                    this.lastExpansionTime = now;
+                }
+            }
+        }
         
-		// Если игрок под атакой и у него достаточно войск, он может контратаковать
-		if (this.isBeingAttacked && this.troops > 50 && Math.random() < 0.02 * deltaTime) {
-			// Найти игрока, который атакует
-			for (let i = 0; i < players.length; i++) {
-				let attacker = players[i];
-				if (attacker && attacker.attackTarget === this.id && attacker.attackingTroops > 0) {
-					// Проверить, можем ли мы контратаковать (нужно иметь хотя бы 50% войск атакующего)
-					let counterRatio = this.troops / Math.max(1, attacker.attackingTroops);
-					
-					if (counterRatio > 0.5) {
-						let counterPower = Math.min(this.troops * 0.15, attacker.attackingTroops * 0.8);
-						if (counterPower > 10) {
-							this.troops -= counterPower;
-							this.attackingTroops = counterPower;
-							this.attackTarget = attacker.id;
-							this.attackProgress = 0;
-							this.waveAnimation = 0;
-							break;
-						}
-					}
-				}
-			}
-		}
-		
+        // Если игрок под атакой и у него достаточно войск, он может контратаковать
+        if (this.isBeingAttacked && this.troops > 50 && Math.random() < 0.02 * deltaTime) {
+            for (let i = 0; i < players.length; i++) {
+                let attacker = players[i];
+                if (attacker && attacker.attackTarget === this.id && attacker.attackingTroops > 0) {
+                    let counterRatio = this.troops / Math.max(1, attacker.attackingTroops);
+                    
+                    if (counterRatio > 0.5) {
+                        let counterPower = Math.min(this.troops * 0.15, attacker.attackingTroops * 0.8);
+                        if (counterPower > 10) {
+                            this.troops -= counterPower;
+                            this.attackingTroops = counterPower;
+                            this.attackTarget = attacker.id;
+                            this.attackProgress = 0;
+                            this.waveAnimation = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
         this.lastUpdateTime = now;
     }
     
@@ -513,19 +497,26 @@ class Player {
         let borderCells = [];
         let checked = new Set();
         
-        for (let i = 0; i < Math.min(200, this.cells.length); i++) {
-            let cell = this.cells[i];
-            const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+        // Ищем граничные клетки врага
+        // УВЕЛИЧИВАЕМ количество проверяемых клеток для более быстрого захвата
+        let sampleSize = Math.min(200, enemy.cells.length);
+        let step = Math.max(1, Math.floor(enemy.cells.length / sampleSize));
+        
+        for (let i = 0; i < enemy.cells.length; i += step) {
+            let cell = enemy.cells[i];
+            const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1},
+                         {r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}];
+            
             for (let d of dirs) {
                 let nr = cell.r + d.r, nc = cell.c + d.c;
                 if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                    if (grid[nr][nc].owner === enemy.id) {
+                    // Проверяем, граничит ли клетка врага с нами
+                    if (grid[nr][nc].owner === this.id) {
                         let key = `${cell.r},${cell.c}`;
                         if (!checked.has(key)) {
-                            borderCells.push(cell);
+                            borderCells.push({r: cell.r, c: cell.c});
                             checked.add(key);
                         }
-                        break;
                     }
                 }
             }
@@ -557,63 +548,45 @@ class Player {
         }
     }
     
-	captureEnemyTerritory(enemy) {
-		if (!enemy || enemy.cells.length === 0) return false;
-		
-		// Находим ВСЕ клетки врага, которые граничат с нами
-		let borderCells = [];
-		let checked = new Set();
-		
-		for (let i = 0; i < this.cells.length; i++) {
-			let myCell = this.cells[i];
-			const dirs = [
-				{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}
-			];
-			
-			for (let d of dirs) {
-				let nr = myCell.r + d.r, nc = myCell.c + d.c;
-				if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-					if (grid[nr][nc].owner === enemy.id) {
-						let key = `${nr},${nc}`;
-						if (!checked.has(key)) {
-							borderCells.push({r: nr, c: nc});
-							checked.add(key);
-						}
-					}
-				}
-			}
-		}
-		
-		// Если есть граничащие клетки, захватываем случайную
-		if (borderCells.length > 0) {
-			let randomIndex = Math.floor(Math.random() * borderCells.length);
-			let targetCell = borderCells[randomIndex];
-			this.capture(targetCell.r, targetCell.c);
-			return true;
-		}
-		
-		return false;
-	}
-    
-	capture(r, c) {
-		let cell = grid[r][c];
-		if (cell.owner !== null) {
-			let prev = players[cell.owner];
-			if(prev) {
-				prev.cells = prev.cells.filter(i => i.r !== r || i.c !== c);
-				if (prev.cells.length === 0) {
-					players[prev.id] = null;
-				}
-				
-				// Если мы атакуем этого врага, увеличиваем счетчик захваченных клеток
-				if (this.attackTarget === cell.owner) {
-					this.totalCapturedInAttack++;
-				}
-			}
-		}
-		cell.owner = this.id;
-		this.cells.push({r, c});
-	}
+    captureEnemyTerritory(enemy) {
+        if (!enemy || enemy.cells.length === 0) return false;
+        
+        // Ищем граничные клетки
+        let borderCells = this.findBorderCellsWithEnemy(enemy);
+        
+        // Если есть граничащие клетки, захватываем случайную
+        if (borderCells.length > 0) {
+            let randomIndex = Math.floor(Math.random() * borderCells.length);
+            let targetCell = borderCells[randomIndex];
+            
+            // Проверяем, что клетка еще принадлежит врагу
+            if (grid[targetCell.r][targetCell.c].owner === enemy.id) {
+                this.capture(targetCell.r, targetCell.c);
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    capture(r, c) {
+        let cell = grid[r][c];
+        if (cell.owner !== null) {
+            let prev = players[cell.owner];
+            if(prev) {
+                prev.cells = prev.cells.filter(i => i.r !== r || i.c !== c);
+                if (prev.cells.length === 0) {
+                    players[prev.id] = null;
+                }
+                
+                if (this.attackTarget === cell.owner) {
+                    this.totalCapturedInAttack++;
+                }
+            }
+        }
+        cell.owner = this.id;
+        this.cells.push({r, c});
+    }
 }
 
 function initMap() {
@@ -1084,148 +1057,83 @@ function draw() {
     ctx.translate(Math.floor(cam.x), Math.floor(cam.y));
     ctx.scale(cam.zoom, cam.zoom);
     
-    // ВАЖНО: отключаем сглаживание
+    // Отключаем сглаживание
     ctx.imageSmoothingEnabled = false;
-    ctx.mozImageSmoothingEnabled = false;
-    ctx.webkitImageSmoothingEnabled = false;
-    ctx.msImageSmoothingEnabled = false;
     
-    // Устанавливаем режим рисования без антиалиасинга
-    ctx.lineWidth = 1;
-    ctx.lineJoin = "miter";
-    ctx.lineCap = "butt";
-    
-    // Рисуем воду - без зазоров
+    // Рисуем воду
     ctx.fillStyle = BIOMES.water;
-    // Заполняем всю область карты
-    ctx.fillRect(-10, -10, COLS * CELL_SIZE + 20, ROWS * CELL_SIZE + 20);
+    ctx.fillRect(0, 0, COLS * CELL_SIZE, ROWS * CELL_SIZE);
     
-    if (!preStart) {
-        // Создаем отдельный холст для земли и игроков для устранения зазоров
-        let landCanvas = document.createElement('canvas');
-        landCanvas.width = COLS * CELL_SIZE;
-        landCanvas.height = ROWS * CELL_SIZE;
-        let landCtx = landCanvas.getContext('2d');
-        
-        // Рисуем на отдельном холсте
-        landCtx.imageSmoothingEnabled = false;
-        landCtx.mozImageSmoothingEnabled = false;
-        landCtx.webkitImageSmoothingEnabled = false;
-        landCtx.msImageSmoothingEnabled = false;
-        
-        // Рисуем свободную землю - БЕЗ промежутков
-        landCtx.fillStyle = BIOMES.grass;
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                const cell = grid[r][c];
-                if (cell.type !== 'water' && cell.owner === null) {
-                    landCtx.fillStyle = BIOMES[cell.type];
-                    landCtx.fillRect(
-                        c * CELL_SIZE, 
-                        r * CELL_SIZE, 
-                        CELL_SIZE, 
-                        CELL_SIZE
-                    );
+    // Рисуем землю и территории
+    for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+            const cell = grid[r][c];
+            
+            if (cell.type !== 'water') {
+                // Определяем цвет
+                if (cell.owner === null) {
+                    ctx.fillStyle = BIOMES[cell.type];
+                } else {
+                    // ИСПРАВЛЕНИЕ: Проверяем, что игрок существует и не null
+                    let player = players[cell.owner];
+                    if (player && player.color) {
+                        ctx.fillStyle = player.color;
+                    } else {
+                        ctx.fillStyle = BIOMES[cell.type];
+                    }
                 }
-            }
-        }
-        
-        // Рисуем территории игроков - БЕЗ промежутков
-        for (let i = 0; i < players.length; i++) {
-            let p = players[i];
-            if (p && p.cells.length > 0) {
-                landCtx.fillStyle = p.color;
                 
-                for (let j = 0; j < p.cells.length; j++) {
-                    let cell = p.cells[j];
-                    // Используем целочисленные координаты
-                    let x = Math.floor(cell.c * CELL_SIZE);
-                    let y = Math.floor(cell.r * CELL_SIZE);
-                    landCtx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
-                }
+                // Округляем координаты до целых чисел, чтобы избежать линий
+                const x = Math.round(c * CELL_SIZE);
+                const y = Math.round(r * CELL_SIZE);
+                ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
             }
         }
-        
-        // Рисуем объединенный холст на основном канвасе
-        ctx.drawImage(landCanvas, 0, 0);
-        
-        // Рисуем имена игроков
+    }
+    
+    // Показываем спавны ботов до начала игры
+    if (preStart) {
+        botSpawns.forEach(s => {
+            ctx.beginPath();
+            ctx.arc(s.c * CELL_SIZE, s.r * CELL_SIZE, 25, 0, Math.PI * 2);
+            ctx.fillStyle = s.color;
+            ctx.globalAlpha = 0.3;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        });
+    }
+    
+    // Рисуем имена игроков
+    if (!preStart) {
         for (let i = 0; i < players.length; i++) {
             let p = players[i];
             if (p && p.cells.length > 30) {
                 let fSize = Math.max(12, 18 / cam.zoom);
                 
-                // Плавное обновление позиции
-                let displayX = p.centerX;
-                let displayY = p.centerY;
-                
-                // Интерполяция для плавности
-                if (Date.now() - lastNickUpdateTime > 100) {
-                    lastNickUpdateTime = Date.now();
-                }
-                
+                ctx.save();
                 ctx.fillStyle = "white";
                 ctx.font = `bold ${fSize}px sans-serif`;
                 ctx.textAlign = "center";
                 ctx.strokeStyle = "black";
                 ctx.lineWidth = 4 / cam.zoom;
                 
-                let screenX = displayX;
-                let screenY = displayY - (fSize * 1.5);
+                let screenX = p.centerX;
+                let screenY = p.centerY - (fSize * 1.5);
                 
                 if (screenX > -50 && screenX < COLS * CELL_SIZE + 50 && 
                     screenY > -50 && screenY < ROWS * CELL_SIZE + 50) {
+                    // Имя игрока
                     ctx.strokeText(p.name, screenX, screenY);
                     ctx.fillText(p.name, screenX, screenY);
                     
                     // Войска под ником
                     ctx.font = `${fSize * 0.7}px monospace`;
-                    let displayTroops = Math.round(p.troops);
-                    ctx.strokeText(formatNum(displayTroops), screenX, screenY + (fSize * 1.2));
-                    ctx.fillText(formatNum(displayTroops), screenX, screenY + (fSize * 1.2));
+                    ctx.strokeText(formatNum(p.troops), screenX, screenY + (fSize * 1.2));
+                    ctx.fillText(formatNum(p.troops), screenX, screenY + (fSize * 1.2));
                 }
+                ctx.restore();
             }
         }
-    } else {
-        // Рисуем карту до начала игры
-        // Создаем отдельный холст для земли
-        let landCanvas = document.createElement('canvas');
-        landCanvas.width = COLS * CELL_SIZE;
-        landCanvas.height = ROWS * CELL_SIZE;
-        let landCtx = landCanvas.getContext('2d');
-        
-        landCtx.imageSmoothingEnabled = false;
-        landCtx.mozImageSmoothingEnabled = false;
-        landCtx.webkitImageSmoothingEnabled = false;
-        landCtx.msImageSmoothingEnabled = false;
-        
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                const cell = grid[r][c];
-                if (cell.type !== 'water') {
-                    landCtx.fillStyle = BIOMES[cell.type];
-                    landCtx.fillRect(
-                        c * CELL_SIZE, 
-                        r * CELL_SIZE, 
-                        CELL_SIZE, 
-                        CELL_SIZE
-                    );
-                }
-            }
-        }
-        
-        // Рисуем объединенный холст на основном канвасе
-        ctx.drawImage(landCanvas, 0, 0);
-        
-        // Показываем спавны ботов
-        botSpawns.forEach(s => {
-            ctx.beginPath();
-            ctx.arc(s.c * CELL_SIZE, s.r * CELL_SIZE, 25, 0, Math.PI*2);
-            ctx.fillStyle = s.color;
-            ctx.globalAlpha = 0.3;
-            ctx.fill();
-            ctx.globalAlpha = 1;
-        });
     }
     
     ctx.restore();
