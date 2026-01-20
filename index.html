@@ -75,6 +75,9 @@
 <script>
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+let lastFrameTime = performance.now();
+let fps = 0;
+let lastFpsUpdate = 0;
 
 const troopEl = document.getElementById('troop-count');
 const limitEl = document.getElementById('troop-limit');
@@ -1082,6 +1085,23 @@ function update() {
     
     draw();
     requestAnimationFrame(update);
+
+			// --- FPS ---
+	const now = performance.now();
+	const delta = now - lastFrameTime;
+	lastFrameTime = now;
+	// обновляем FPS только раз в 500 мс
+	if (now - lastFpsUpdate > 250) { 
+		fps = 1000 / delta;
+		lastFpsUpdate = now;
+	}
+
+	ctx.save();
+	ctx.fillStyle = 'lime';
+	ctx.font = '16px monospace';
+	ctx.textAlign = 'right';
+	ctx.fillText('FPS: ' + fps.toFixed(1), canvas.width - 10, 20);
+	ctx.restore();
 }
 
 function draw() {
@@ -1222,3 +1242,4 @@ update();
 </script>
 </body>
 </html>
+
