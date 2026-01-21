@@ -8,7 +8,11 @@
         #ui-left, #ui-right { width: 280px; padding: 20px; background: rgba(10, 10, 15, 0.98); border: 1px solid #222; z-index: 10; }
         #game-container { flex-grow: 1; position: relative; background: #08121c; cursor: crosshair; }
         canvas { display: block; }
-        .stat-box { background: #0a0a0a; padding: 12px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #333; }
+        #ui-right { position: relative; }
+        .version-info {
+            position: absolute; bottom: 10px; right: 10px; font-size: 18px;
+            color: #a6a6a6; opacity: 0.7; font-family: monospace; user-select: none; }
+        .stat-box { background: #0a0a0a; padding: 12px; border-radius: 5px; margin-bottom: 10px; border: 1px solid #5b5b5b; }
         .stat { font-size: 16px; margin: 4px 0; display: flex; justify-content: space-between; font-family: monospace; }
         .limit { color: #888; font-size: 11px; text-align: right; margin-bottom: 5px; }
         .gold { color: #ffd700; } .troops { color: #00ff88; }
@@ -62,6 +66,7 @@
             <div id="result-buttons">
                 <button id="restart-btn">ПЕРЕЗАПУСК</button>
                 <button id="continue-btn" style="display:none;">ПРОДОЛЖИТЬ</button>
+                <button id="spectate-btn" style="display:none;">НАБЛЮДАТЬ</button>
             </div>
         </div>
     </div>
@@ -69,7 +74,8 @@
 
 <div id="ui-right">
     <h3>РАЗВЕДКА</h3>
-    <div id="hover-info">Наведите на карту...</div>
+    <div id="hover-info">Наведите на карту и нажмите, чтобы начать играть...</div>
+    <div class="version-info">v0.1.0 (Pre-Alpha)</div>
 </div>
 
 <script>
@@ -79,6 +85,9 @@
     const mapCtx = mapCanvas.getContext('2d');
     mapCanvas.width = 250 * 8; // COLS * CELL_SIZE
     mapCanvas.height = 220 * 8; // ROWS * CELL_SIZE
+
+
+
     let lastFrameTime = performance.now();
 
     let fps = 0;
@@ -93,13 +102,21 @@
     const statusEl = document.getElementById('status');
     const hoverInfoEl = document.getElementById('hover-info');
     const attackProgressBar = document.getElementById('attack-progress-bar');
-    const gameOverlay = document.getElementById('game-overlay');
     const resultText = document.getElementById('result-text');
-    const restartBtn = document.getElementById('restart-btn');
-    const continueBtn = document.getElementById('continue-btn');
     const attackTroopsInfo = document.getElementById('attack-troops-info');
     const attackingTroopsFill = document.getElementById('attacking-troops-fill');
     const attackingTroopsText = document.getElementById('attacking-troops-text');
+
+    // === кнопки меню ===
+    const gameOverlay = document.getElementById('game-overlay');
+    const continueBtn = document.getElementById('continue-btn');
+    const restartBtn = document.getElementById('restart-btn');
+    const spectateBtn = document.getElementById('spectate-btn');
+
+    // === обработчики кнопок ===
+    continueBtn.addEventListener('click', continueGame);
+    restartBtn.addEventListener('click', restartGame);
+    spectateBtn.addEventListener('click', spectateGame);
 
     // УВЕЛИЧЕННЫЕ ПАРАМЕТРЫ КАРТЫ
     const ROWS = 220;
@@ -141,28 +158,32 @@
     let lastNickUpdateTime = 0;
     let totalLandCells = 0;
     let gameEnded = false;
+    let ignoreWin80 = false; // Флаг, чтобы не показывать меню победы повторно
+    let isSpectating = false;
     let hoverCell = null;
     let lastHoverUpdate = 0;
     let mouseX = 0;
     let mouseY = 0;
 
+    let gameResultType = '';
+
     // ЯРКИЕ ЦВЕТА КАРТЫ
     const BIOMES = {
-        water: "#0a2a4a",
-        grass: "#2a8b2a",
+        water: "#00479c",
+        grass: "#179517",
         mountain: "#5a5a5a"
     };
 
-    // ЯРКИЕ ЦВЕТА ИГРОКОВ
+    // ЯРКИЕ ЦВЕТА ДЛЯ ИГРОКА И 4 СИЛЬНЫХ БОТОВ, ОСТАЛЬНЫЕ ТУСКЛЫЕ
     const COLORS = [
-        "#007bff", "#ff3333", "#ffcc00", "#9933ff", "#00ffcc",
-        "#ff9900", "#ffffff", "#ff66b2", "#00cccc", "#cc00cc",
-        "#00ff00", "#ff00ff", "#ffff00", "#00ffff", "#ff8800",
-        "#8800ff", "#008888", "#888800", "#880000", "#008800"
+        "#007bff", // Игрок (Синий)
+        "#ff3333", "#ffcc00", "#00ffcc", "#ff9900", // 4 Сильных (Красный, Желтый, Бирюзовый, Оранжевый)
+        // Пассивные (тусклые цвета)
+        "#4a5568", "#5a6268", "#4e5d4c", "#5f4b4b", "#4b5d5f",
+        "#555555", "#445544", "#554455", "#444455", "#555544"
     ];
 
-    const NAMES = ["ИГРОК", "Египет", "Нигерия", "ЮАР", "Эфиопия", "Алжир", "Конго", "Марокко", "Кения", "Судан"];
-
+    const NAMES = ["ИГРОК", "Египет", "Нигерия", "ЮАР", "Эфиопия", "Алжир", "Конго", "Марокко", "Кения", "Судан", "Ливия", "Мали", "Чад", "Ангола", "Гана"];
     function formatNum(num) {
         if (num >= 1000000) return (num / 1000000).toFixed(2) + 'M';
         if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
@@ -175,17 +196,65 @@
     // Генерация маски для большой карты
     function generateMask() {
         let mask = [];
-        for(let r=0; r<ROWS; r++) {
+
+        // Параметры "континентальности"
+        const centerX = COLS / 2;
+        const centerY = ROWS / 2;
+        const maxDist = Math.min(centerX, centerY) * 0.9; // Радиус затухания
+
+        for (let r = 0; r < ROWS; r++) {
             let row = "";
-            for(let c=0; c<COLS; c++) {
-                let dx = (c - COLS/2) / (COLS/2.5);
-                let dy = (r - ROWS/2) / (ROWS/2.2);
-                let dist = dx*dx + dy*dy;
-                row += (dist < 0.8 + Math.random()*0.3) ? "1" : "0";
+            for (let c = 0; c < COLS; c++) {
+                // Принудительно делаем границы водой (чтобы не было обрывов)
+                if (r === 0 || r === ROWS - 1 || c === 0 || c === COLS - 1) {
+                    row += "0";
+                    continue;
+                }
+
+                // Вычисляем расстояние от центра (0.0 - центр, 1.0 - край)
+                let dx = (c - centerX) / centerX;
+                let dy = (r - centerY) / centerY;
+                let dist = Math.sqrt(dx * dx + dy * dy);
+
+                // Создаем шум (неровные края)
+                // Используем сумму нескольких синусоид для имитации фрактального шума
+                let noise =
+                    Math.sin(c * 0.1) * 0.15 +
+                    Math.cos(r * 0.1) * 0.15 +
+                    Math.sin((c + r) * 0.05) * 0.2;
+
+                // Итоговый порог: чем дальше от центра, тем меньше шансов на сушу
+                // dist + noise создает "рваный" берег
+                let threshold = 0.65;
+
+                if (dist + noise < threshold) {
+                    row += "1";
+                } else {
+                    row += "0";
+                }
             }
             mask.push(row);
         }
         return mask;
+    }
+
+    function initGrid() {
+        grid = [];
+        totalLandCells = 0;
+        for (let r = 0; r < ROWS; r++) {
+            grid[r] = [];
+            for (let c = 0; c < COLS; c++) {
+                let isLand = MASK[r][c] === "1";
+                if (isLand) totalLandCells++;
+
+                grid[r][c] = {
+                    r: r,
+                    c: c,
+                    owner: null,
+                    type: isLand ? 'grass' : 'water'
+                };
+            }
+        }
     }
 
     const MASK = generateMask();
@@ -196,7 +265,17 @@
             this.name = name;
             this.color = color;
             this.isBot = isBot;
-            this.troops = 12500;
+            // Сильными считаем первых 4-х ботов (id от 1 до 4)
+            this.isAggressive = !isBot || (id >= 1 && id <= 4);
+            // --- НОВАЯ ЛОГИКА НАЧАЛЬНЫХ ВОЙСК ---
+            // Если игрок (id 0) — 12500
+            // Если агрессивный бот — 6500
+            // Если пассивный бот — 500 (совсем мало, чтобы они медленно росли)
+            if (this.id === 0) {
+                this.troops = 12500;
+            } else {
+                this.troops = this.isAggressive ? 5500 : 3000;
+            }
             this.gold = 0;
             this.cells = [];
             this.maxTroops = TROOP_LIMIT_BASE;
@@ -213,7 +292,7 @@
             this.nameFixed = false;
             this.borderCache = new Map();
             this.contacts = new Map(); // ID врага => количество общих границ (клеток)
-
+            this.enemyBorders = new Map(); // ID врага => Set строк "r,c" (клетки врага, граничащие с нами)
             // Для атаки на врага
             this.attacks = [];
 
@@ -227,6 +306,11 @@
             this.lastExpansionTime = 0;
             this.lastUpdateTime = Date.now();
             this.availableNeighbors = new Set(); // Используем Set, чтобы координаты не дублировались
+
+            // В constructor(id, name, color, isBot)
+            this.personality = Math.random() > 0.7 ? 'aggr' : (Math.random() > 0.4 ? 'bal' : 'def');
+            // Даем ботам стартовый разброс по накоплению войск
+            this.aggressionThreshold = this.personality === 'aggr' ? 400 : (this.personality === 'def' ? 1500 : 800);
         }
 
         markCenterDirty() {
@@ -278,41 +362,35 @@
             // Одинаковые правила для всех игроков
             this.maxTroops = TROOP_LIMIT_BASE + (this.cells.length * 80);
 
-            // ИСПРАВЛЕННАЯ СКОРОСТЬ ВОССТАНОВЛЕНИЯ ВОЙСК
+            // СКОРОСТЬ ВОССТАНОВЛЕНИЯ ВОЙСК
             if (this.troops < this.maxTroops) {
-                // Увеличиваем базовую скорость восстановления в зависимости от размера территории
-                let baseGrowthRate = 0.1;
-                let bonusFromTerritory = this.cells.length * 0.0002;
-                let growth = (this.cells.length * (baseGrowthRate + bonusFromTerritory) + 10) * deltaTime;
+                const count = this.cells.length;
 
-                // Если игрок под атакой, восстанавливается медленнее
-                if (this.isBeingAttacked) {
-                    growth *= 0.8;
+                // 1. Плавный бонус для выживания (теперь чуть мощнее на старте)
+                let tinyBonus = 0;
+                if (count < 150) {
+                    tinyBonus = (150 - count) * 0.8;
                 }
 
-                // Эффект неэффективности управления для очень больших стран
-                let inefficiencyFactor = 1.0;
-                if (this.cells.length > 10000) {
-                    // Для стран больше 10000 клеток - значительное замедление
-                    inefficiencyFactor = 10000 / this.cells.length;
-                } else if (this.cells.length > 5000) {
-                    // Для стран больше 5000 клеток - умеренное замедление
-                    inefficiencyFactor = 0.7;
-                } else if (this.cells.length > 2000) {
-                    // Для стран больше 2000 клеток - легкое замедление
-                    inefficiencyFactor = 0.85;
-                }
+                // 2. Эффективность управления (Увеличена в 5 раз по сравнению с прошлым вариантом)
+                // Раньше было 0.008, теперь 0.04 — это даст ощутимый поток войск
+                let efficiencyBase = (this.id === 0) ? 0.045 : 0.04;
+                let efficiency = efficiencyBase / (1 + count * 0.001);
 
-                // Применяем ко всем процессам (войска, золото, расширение)
-                if (inefficiencyFactor < 1.0) {
-                    growth *= inefficiencyFactor;
-                }
+                // 3. Масштаб империи (Усилен, чтобы большие страны быстрее заполняли лимит)
+                let empireScale = Math.pow(count, 1.2) * 0.005;
+
+                // Итоговый расчет скорости (убрал множитель 0.5, теперь рост идет на полную)
+                let growthRate = (count * efficiency) + empireScale + tinyBonus;
+
+                // Применяем deltaTime для стабильности FPS
+                let growth = growthRate * deltaTime;
 
                 this.troops = Math.min(this.maxTroops, this.troops + growth);
             }
 
             // Золото с эффектом неэффективности
-            let goldGrowth = (this.cells.length * 0.1) * deltaTime;
+            let goldGrowth = (this.cells.length * 0.02) * deltaTime;
 
             // Эффект неэффективности управления для золота
             let goldInefficiencyFactor = 1.0;
@@ -347,29 +425,29 @@
                 {r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}
             ];
 
-            // РАСШИРЕНИЕ НА СВОБОДНЫЕ ТЕРРИТОРИИ - УВЕЛИЧЕНА СКОРОСТЬ
-            if (this.expansionQueue > 0 && this.troops > 0 && this.availableNeighbors && this.availableNeighbors.size > 0) {
-                let expansionRate = Math.min(this.expansionQueue, 100) * deltaTime;
-                let successfulCaptures = 0;
+            // РАСШИРЕНИЕ НА СВОБОДНЫЕ ТЕРРИТОРИИ - ХАОТИЧНЫЙ ФРОНТ
+            if (this.expansionQueue >= 1 && this.availableNeighbors.size > 0) {
+                // Скорость захвата (сколько клеток за тик)
+                let expansionRate = Math.ceil(Math.min(this.expansionQueue, 15) * deltaTime);
 
-                // Превращаем Set в массив один раз за кадр для случайного выбора
+                // Превращаем Set в массив для возможности выбора случайного индекса
                 let neighborsArray = Array.from(this.availableNeighbors);
 
-                while (successfulCaptures < expansionRate && neighborsArray.length > 0) {
-                    // Берем случайную ГРАНИЧНУЮ клетку
+                for (let i = 0; i < expansionRate && neighborsArray.length > 0; i++) {
+                    // ХАОТИЧНОСТЬ: берем случайную клетку из списка доступных соседей
                     let randomIndex = Math.floor(Math.random() * neighborsArray.length);
-                    let coords = neighborsArray[randomIndex].split(',').map(Number);
-                    let nr = coords[0], nc = coords[1];
+                    let coordsStr = neighborsArray[randomIndex];
+                    let [nr, nc] = coordsStr.split(',').map(Number);
 
-                    // Проверяем еще раз (на случай если кто-то другой уже захватил)
+                    // ПРОВЕРКА ПЛОТНОСТИ: захватываем только если клетка все еще свободна
                     if (grid[nr][nc].owner === null) {
                         this.capture(nr, nc);
-                        successfulCaptures++;
                         this.expansionQueue--;
-                        this.troops -= 0.05;
                     }
 
-                    // Удаляем из локального списка, чтобы не пытаться захватить дважды за кадр
+                    // Удаляем из общего списка соседей игрока
+                    this.availableNeighbors.delete(coordsStr);
+                    // Удаляем из временного массива текущего кадра, чтобы не выбрать дважды
                     neighborsArray.splice(randomIndex, 1);
                 }
             }
@@ -379,122 +457,176 @@
                 let attack = this.attacks[i];
                 let enemy = players[attack.target];
 
+                // Если враг стерт с лица земли другими или тобой
                 if (!enemy || enemy.cells.length === 0) {
-                    // Враг уничтожен, возвращаем оставшиеся войска
-                    this.troops += attack.troops * 0.5;
+                    this.troops += Math.max(0, attack.troops);
                     this.attacks.splice(i, 1);
                     continue;
                 }
 
                 enemy.isBeingAttacked = true;
 
-                // Рассчитываем соотношение сил для этой атаки
-                let powerRatio = attack.troops / Math.max(1, enemy.troops);
-                let ourLossRate = 0.0;
-                let enemyLossRate = 0.0;
+                // --- ФАЗА 1: БИТВА (Сбалансированный урон) ---
+                // Уменьшаем базовый урон обороны, чтобы атака жила дольше
+                let ourAtkPower = attack.troops * 0.015 * deltaTime;
+                let enemyDefPower = enemy.troops * 0.012 * deltaTime;
 
-                if (powerRatio < 0.5) {
-                    ourLossRate = 0.04 * deltaTime;
-                    enemyLossRate = 0.005 * deltaTime;
-                } else if (powerRatio < 1.0) {
-                    ourLossRate = 0.02 * deltaTime;
-                    enemyLossRate = 0.01 * deltaTime;
-                } else if (powerRatio < 2.0) {
-                    ourLossRate = 0.01 * deltaTime;
-                    enemyLossRate = 0.015 * deltaTime;
-                } else if (powerRatio < 5.0) {
-                    ourLossRate = 0.005 * deltaTime;
-                    enemyLossRate = 0.02 * deltaTime;
-                } else {
-                    // При ОГРОМНОМ преимуществе (5:1 и более)
-                    ourLossRate = 0.001 * deltaTime;
-                    enemyLossRate = 0.05 * deltaTime;
+                // Если мы атакуем бота, который намного слабее, мы почти не несем потерь
+                if (attack.troops > enemy.troops * 2) enemyDefPower *= 0.5;
+
+                enemy.troops = Math.max(0, enemy.troops - ourAtkPower);
+                attack.troops = Math.max(0, attack.troops - enemyDefPower);
+
+                // --- ФАЗА 2: ДИНАМИЧЕСКИЙ ЗАХВАТ ---
+                let enemyCellCount = enemy.cells.length;
+                let captureEfficiency = Math.max(1, Math.floor(attack.troops / 100));
+                let dominanceMultiplier = Math.max(1.0, this.cells.length / (enemyCellCount || 1));
+
+                // ЭФФЕКТ КОЛЛАПСА: Если у врага осталось мало клеток, скорость захвата взлетает
+                if (enemyCellCount < 100) {
+                    // Чем меньше клеток у врага, тем яростнее захват (до х10 скорости)
+                    dominanceMultiplier *= (10 - (enemyCellCount / 10));
                 }
+                let maxAttempts = Math.min(Math.floor(captureEfficiency * dominanceMultiplier), 150);
 
-                // Применяем потери
-                attack.troops -= attack.troops * ourLossRate;
-                enemy.troops -= enemy.troops * enemyLossRate;
+                // Если войск много, а враг крошечный — гарантируем минимум 10 попыток за тик
+                if (attack.troops > 1000 && enemyCellCount < 20) maxAttempts = Math.max(maxAttempts, 20);
 
-                // ЗАХВАТ ТЕРРИТОРИИ - УВЕЛИЧЕННАЯ ЭФФЕКТИВНОСТЬ
-                let captureChance = Math.min(powerRatio * 1.2, 0.99);
+                for (let j = 0; j < maxAttempts; j++) {
+                    // При агонии врага шанс успеха 100%
+                    let successChance = enemyCellCount < 30 ? 1.0 : 0.85;
 
-                // Количество попыток захвата за кадр
-                let captureAttempts = Math.floor(8 * deltaTime);
-                captureAttempts = Math.min(captureAttempts, 20);
-
-                let capturedThisFrame = 0;
-                for (let j = 0; j < captureAttempts; j++) {
-                    if (Math.random() < captureChance * deltaTime) {
+                    if (Math.random() < successChance) {
                         if (this.captureEnemyTerritory(enemy)) {
-                            capturedThisFrame++;
-                            attack.progress += 0.005;
+                            attack.troops = Math.max(0, attack.troops - 0.3); // Удешевляем захват последних крох
                         }
                     }
                 }
 
-                // МАССОВЫЙ ЗАХВАТ при большом преимуществе
-                if (powerRatio > 3) {
-                    let multiCapture = Math.floor(powerRatio / 3);
-                    multiCapture = Math.min(multiCapture, 5);
-
-                    for (let j = 0; j < multiCapture; j++) {
-                        if (Math.random() < 0.7) {
-                            this.captureEnemyTerritory(enemy);
-                        }
-                    }
-                }
-
-                // Обновляем прогресс атаки
+                // --- ФАЗА 3: ОБНОВЛЕНИЕ СОСТОЯНИЯ АТАКИ ---
+                // Рассчитываем прогресс захвата для UI
+                // Мы сравниваем изначальное количество войск в отряде с текущим остатком
                 if (attack.initialTroops > 0) {
-                    let currentProgress = Math.max(0, 1 - (attack.troops / attack.initialTroops));
-                    attack.progress = Math.min(1, attack.progress * 0.9 + currentProgress * 0.1);
+                    attack.progress = attack.troops / attack.initialTroops;
                 }
 
-                // Если атакующие войска закончились
-                if (attack.troops <= 5) {
-                    this.troops += attack.troops * 0.5;
+                // Если это атака игрока (id === 0), обновляем полоску прогресса в интерфейсе
+                if (this.id === 0) {
+                    // Берем прогресс первой активной атаки для индикатора слева
+                    let mainAttack = this.attacks[0];
+                    if (mainAttack) {
+                        attackProgressBar.style.width = (mainAttack.progress * 100) + "%";
+                        attackingTroopsFill.style.width = (mainAttack.progress * 100) + "%";
+                        attackingTroopsText.innerText = `В атаке: ${formatNum(mainAttack.troops)}`;
+                    }
+                }
+
+                // Визуальный эффект: если атака идет успешно, создаем пульсацию на границе
+                if (now - this.lastWaveTime > 500) {
+                    this.createAttackWaveEffect(enemy);
+                    this.lastWaveTime = now;
+                }
+
+                // --- ФАЗА 4: ПОЛНОЕ УНИЧТОЖЕНИЕ ОТРЯДА ---
+                // Если в результате боя или захвата земель у нас осталось меньше 10 войск,
+                // отряд считается полностью уничтоженным гарнизоном врага.
+                if (attack.troops <= 10) {
+                    // Сообщаем в статус (если это игрок)
+                    if (this.id === 0) statusEl.innerText = "АТАКА ПОДАВЛЕНА ВОЙСКАМИ ВРАГА!";
                     this.attacks.splice(i, 1);
+                    continue;
+                }
+
+                // Обновляем прогресс-бар в UI на основе выживших
+                if (attack.initialTroops > 0) {
+                    // Показываем, сколько % отряда еще живо
+                    attack.progress = attack.troops / attack.initialTroops;
                 }
             }
 
-            // БОТЫ РАСШИРЯЮТСЯ И АТАКУЮТ
-            if (this.isBot && now - this.lastExpansionTime > 1000) {
-                // Боты атакуют только если у них значительное преимущество
-                let enemy = this.findWeakestEnemy();
-                if (enemy && this.troops > enemy.troops * 1.8) {
-                    let budget = Math.min(200 + Math.random() * 200, this.troops * 0.2);
-                    if (budget > 20) {
-                        this.troops -= budget;
-                        this.startAttack(enemy.id, budget);
-                        this.lastExpansionTime = now;
+            // БОТЫ РАСШИРЯЮТСЯ И АТАКУЮТ (логика ботов)
+            // Увеличиваем интервал и добавляем случайное смещение, чтобы боты не думали в один и тот же кадр
+            // --- ОБНОВЛЕННАЯ ЛОГИКА БОТОВ (АГРЕССИВНЫЕ VS ПАССИВНЫЕ) ---
+            // Устанавливаем интервал: агрессивные думают быстрее, пассивные — медленнее
+            let decisionInterval = this.isAggressive ? 500 : 1500;
+
+            if (this.isBot && now - this.lastExpansionTime > (decisionInterval + Math.random() * 200)) {
+
+                // 1. ЛОГИКА ДЛЯ АГРЕССИВНЫХ БОТОВ (ХИЩНИКИ)
+                if (this.isAggressive) {
+                    if (this.troops > this.aggressionThreshold) {
+                        let targets = [];
+
+                        for (let [enemyId, borderSet] of this.enemyBorders) {
+                            let enemy = players[enemyId];
+                            if (!enemy || enemy.cells.length === 0) continue;
+
+                            let powerAdvantage = this.troops / Math.max(1, enemy.troops);
+                            let priority = Math.random() * 20;
+
+                            // --- НОВАЯ СТРАТЕГИЧЕСКАЯ ЛОГИКА ---
+                            if (enemy.isAggressive === false) {
+                                // Если сосед пассивный и слишком мал (меньше 5% от карты или 1000 войск)
+                                // Агрессор "ждет", пока тот накопит ресурсы
+                                if (enemy.cells.length < 300 || enemy.troops < 2000) {
+                                    priority -= 50; // Снижаем приоритет атаки, даем вырасти
+                                } else {
+                                    priority += 40; // Теперь он достаточно "сочный", можно есть
+                                }
+                            } else {
+                                // Если сосед — другой агрессор, атакуем его активнее!
+                                // Чтобы он не съел наших пассивных ботов ("нашу еду")
+                                priority += 60;
+                                if (powerAdvantage > 1.2) priority += 30;
+                            }
+
+                            if (priority > 50) targets.push({enemy, priority});
+                        }
+
+                        if (targets.length > 0) {
+                            targets.sort((a, b) => b.priority - a.priority);
+                            let chosen = targets[0].enemy;
+
+                            // Расчет бюджета
+                            let attackPercent = this.personality === 'aggr' ? 0.4 : 0.25;
+                            let desiredBudget = this.troops * attackPercent;
+
+                            // Не тратим слишком много на захват
+                            let overkillLimit = chosen.troops * 1.5 + 1000;
+                            let finalBudget = Math.min(desiredBudget, overkillLimit);
+
+                            // Атакуем, только если останется надежный резерв для защиты своих границ
+                            if (finalBudget > 100 && (this.troops - finalBudget) > (this.maxTroops * 0.3)) {
+                                this.troops -= finalBudget;
+                                this.startAttack(chosen.id, finalBudget);
+                                this.lastExpansionTime = now;
+                            }
+                        } else if (this.availableNeighbors.size > 0) {
+                            this.expandDirectly(now);
+                        }
                     }
-                } else if (this.troops > this.maxTroops * 0.3) {
-                    let budget = Math.min(100 + Math.random() * 200, this.troops * 0.1);
-                    if (budget > 10) {
-                        this.troops -= budget;
-                        this.expansionQueue += budget;
-                        this.lastExpansionTime = now;
-                    }
+                }
+                // 2. ЛОГИКА ДЛЯ ПАССИВНЫХ БОТОВ (КОРМ)
+                else if (this.availableNeighbors.size > 0) {
+                    // Пассивные боты никогда не атакуют первыми, только занимают пустоту
+                    this.expandDirectly(now);
                 }
             }
 
-            // Если игрок под атакой и у него достаточно войск, он может контратаковать
-            if (this.isBeingAttacked && this.troops > 50 && Math.random() < 0.02 * deltaTime) {
+            // --- ЛОГИКА КОНТРАТАКИ (Только для агрессивных) ---
+            // Пассивные боты не контратакуют, что экономит производительность
+            if (this.isAggressive && this.isBeingAttacked && this.troops > 100 && Math.random() < 0.05 * deltaTime) {
                 for (let i = 0; i < players.length; i++) {
                     let attacker = players[i];
                     if (attacker && attacker.attacks) {
-                        // Проверяем все атаки этого игрока
                         for (let attack of attacker.attacks) {
                             if (attack.target === this.id && attack.troops > 0) {
-                                let counterRatio = this.troops / Math.max(1, attack.troops);
-
-                                if (counterRatio > 0.5) {
-                                    let counterPower = Math.min(this.troops * 0.15, attack.troops * 0.8);
-                                    if (counterPower > 10) {
-                                        this.troops -= counterPower;
-                                        this.startAttack(attacker.id, counterPower);
-                                        break;
-                                    }
+                                // Контратака: бьем в ответ на 10% от текущих войск
+                                let counterPower = Math.min(this.troops * 0.1, attack.troops * 1.2);
+                                if (counterPower > 50) {
+                                    this.troops -= counterPower;
+                                    this.startAttack(attacker.id, counterPower);
+                                    break;
                                 }
                             }
                         }
@@ -503,6 +635,14 @@
             }
 
             this.lastUpdateTime = now;
+        }
+
+        expandDirectly(now) {
+            // Пассивное расширение: тратим до 10% войск на захват свободных клеток
+            let expAmount = Math.min(this.troops * 0.1, 800);
+            this.troops -= expAmount;
+            this.expansionQueue += expAmount;
+            this.lastExpansionTime = now;
         }
 
         getBorderWith(enemy) {
@@ -521,57 +661,52 @@
 
             for (let i = 0; i < players.length; i++) {
                 let p = players[i];
+
+                // Не выбираем себя и мертвых
                 if (p && p.id !== this.id && p.cells.length > 0) {
+
+                    // Проверяем наличие границы с этим игроком
                     let hasBorder = false;
-                    for (let j = 0; j < Math.min(50, this.cells.length); j++) {
-                        let cell = this.cells[j];
-                        const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
-                        for (let d of dirs) {
-                            let nr = cell.r + d.r, nc = cell.c + d.c;
-                            if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                                if (grid[nr][nc].owner === p.id) {
-                                    hasBorder = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (hasBorder) break;
+                    if (this.enemyBorders.has(p.id) && this.enemyBorders.get(p.id).size > 0) {
+                        hasBorder = true;
                     }
 
-                    if (hasBorder && p.troops < minTroops) {
-                        minTroops = p.troops;
-                        weakest = p;
+                    // УСЛОВИЕ: Атакуем только если враг слабее нас (минимум на 20%)
+                    // И ищем самого слабого среди тех, кто слабее нас
+                    if (hasBorder && p.troops < this.troops * 0.8) {
+                        if (p.troops < minTroops) {
+                            minTroops = p.troops;
+                            weakest = p;
+                        }
                     }
                 }
             }
-
             return weakest;
         }
 
         findBorderCellsWithEnemy(enemy) {
-            if (!enemy || enemy.cells.length === 0) return [];
+            if (!enemy || !this.enemyBorders.has(enemy.id)) return [];
 
-            let borderCells = [];
-            // Проверяем клетки врага, чтобы найти те, что граничат с нами
-            // Оптимизация: проверяем случайную выборку из клеток врага
-            const sampleSize = Math.min(500, enemy.cells.length);
-            const step = Math.max(1, Math.floor(enemy.cells.length / sampleSize));
-
-            for (let i = 0; i < enemy.cells.length; i += step) {
-                let cell = enemy.cells[i];
-                const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
-
-                for (let d of dirs) {
-                    let nr = cell.r + d.r, nc = cell.c + d.c;
-                    if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                        if (grid[nr][nc].owner === this.id) {
-                            borderCells.push({r: cell.r, c: cell.c});
-                            break; // Эту клетку врага можно захватить, идем к следующей
-                        }
-                    }
+            let borderSet = this.enemyBorders.get(enemy.id);
+            if (borderSet.size === 0) {
+                // Если через границы не нашли, берем случайные клетки врага напрямую (прорыв в тыл)
+                if (enemy.cells.length > 0 && enemy.cells.length < 10) {
+                    return [enemy.cells[Math.floor(Math.random() * enemy.cells.length)]];
                 }
+                return [];
             }
-            return borderCells;
+
+            // Берем до 100 случайных точек границы без сортировки
+            let borders = Array.from(borderSet);
+            let result = [];
+            let samples = Math.min(borders.length, 100);
+
+            for(let i = 0; i < samples; i++) {
+                let idx = Math.floor(Math.random() * borders.length);
+                const [r, c] = borders[idx].split(',').map(Number);
+                result.push({r, c});
+            }
+            return result;
         }
 
         createAttackWaveEffect(enemy) {
@@ -600,31 +735,42 @@
         captureEnemyTerritory(enemy) {
             if (!enemy || enemy.cells.length === 0) return false;
 
-            // Приоритет 1: Ищем клетки на границе
             let borderCells = this.findBorderCellsWithEnemy(enemy);
-
-            // ДЕБАГ: покажем сколько граничных клеток найдено
-            if (borderCells.length > 0 && this.id === 0) {
-                //console.log(`Найдено граничных клеток: ${borderCells.length}`);
-            }
+            let targetCell = null;
 
             if (borderCells.length > 0) {
-                // Выбираем случайную граничную клетку
-                let targetCell = borderCells[Math.floor(Math.random() * borderCells.length)];
+                // Убираем фиксированный sampleSize в 20 штук.
+                // Вместо этого берем случайную клетку из ВСЕГО массива границ.
+                // Это гарантирует, что даже если граница в 1 пиксель, мы в нее попадем.
+                targetCell = borderCells[Math.floor(Math.random() * borderCells.length)];
+            }
+            else if (enemy.cells.length > 0) {
+                // Если явных границ нет (анклав), берем любую клетку врага
+                targetCell = enemy.cells[Math.floor(Math.random() * enemy.cells.length)];
+            }
 
-                // Проверяем, что клетка еще принадлежит врагу
-                if (grid[targetCell.r][targetCell.c].owner === enemy.id) {
+            if (targetCell) {
+                // Проверяем актуальность владельца перед захватом
+                const cell = grid[targetCell.r][targetCell.c];
+                if (cell.owner === enemy.id) {
                     this.capture(targetCell.r, targetCell.c);
-
-                    // ДЕБАГ: покажем информацию о захвате
-                    if (this.id === 0) {
-                        //console.log(`Захвачена клетка: (${targetCell.r}, ${targetCell.c}) у врага ${enemy.name}`);
-                    }
                     return true;
                 }
             }
-
             return false;
+        }
+
+        // Дополнительный вспомогательный метод для подсчета ваших клеток вокруг точки
+        countFriendlyNeighbors(r, c) {
+            let count = 0;
+            const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1},{r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}];
+            for (let d of dirs) {
+                let nr = r + d.r, nc = c + d.c;
+                if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+                    if (grid[nr][nc].owner === this.id) count++;
+                }
+            }
+            return count;
         }
 
         startAttack(enemyId, budget) {
@@ -650,56 +796,98 @@
         }
 
         capture(r, c) {
-            // Мгновенная позиция ника для первой клетки
+
             if (this.cells.length === 0) {
-                this.nameX = (c + 0.5) * CELL_SIZE;
-                this.nameY = (r + 0.5) * CELL_SIZE - 20;
-                this.targetCenterX = (c + 0.5) * CELL_SIZE;
-                this.targetCenterY = (r + 0.5) * CELL_SIZE;
-                this.nameFixed = true;
+                // Если это самая первая клетка игрока,
+                // принудительно сканируем всё вокруг неё один раз
+                const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+                for (let d of dirs) {
+                    let nr = r + d.r, nc = c + d.c;
+                    if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+                        if (grid[nr][nc].owner === null) {
+                            this.availableNeighbors.add(`${nr},${nc}`);
+                        }
+                    }
+                }
+            }
+
+            if (this.cells.length === 1) {
+                // Устанавливаем координаты сразу в пикселях
+                this.targetCenterX = c * CELL_SIZE;
+                this.targetCenterY = r * CELL_SIZE;
+                this.centerX = this.targetCenterX;
+                this.centerY = this.targetCenterY;
+                this.nameX = this.targetCenterX; // Если используете nameX для отрисовки
+                this.nameY = this.targetCenterY;
             }
 
             let cell = grid[r][c];
             let oldOwnerId = cell.owner;
 
-            // Оптимизированное удаление у старого владельца
+            // 1. УДАЛЕНИЕ У ПРЕДЫДУЩЕГО ВЛАДЕЛЬЦА
             if (oldOwnerId !== null) {
                 let prev = players[oldOwnerId];
                 if (prev) {
                     const idx = prev.cells.findIndex(i => i.r === r && i.c === c);
                     if (idx !== -1) {
-                        prev.cells[idx] = prev.cells[prev.cells.length - 1];
-                        prev.cells.pop();
+                        if (prev.cells.length < 50) {
+                            prev.cells.splice(idx, 1);
+                        } else {
+                            prev.cells[idx] = prev.cells[prev.cells.length - 1];
+                            prev.cells.pop();
+                        }
                     }
+                    // Очищаем старые границы
+                    prev.enemyBorders.forEach(borderSet => borderSet.delete(`${r},${c}`));
+                    prev.troops += 0.1;
                 }
             }
 
+            // 2. ПЕРЕХОД КЛЕТКИ К НОВОМУ ВЛАДЕЛЬЦУ
             cell.owner = this.id;
             this.cells.push({r, c});
 
-            // Рисуем на карте
             mapCtx.fillStyle = this.color;
             mapCtx.fillRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
 
-            // ОБНОВЛЯЕМ СПИСОК ДОСТУПНЫХ ДЛЯ ЗАХВАТА КЛЕТОК
-            // Проверяем соседей новой захваченной клетки
+            // 3. ОБНОВЛЕНИЕ ГРАНИЦ (СВОИХ И СОСЕДЕЙ)
             const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
             for (let d of dirs) {
                 let nr = r + d.r, nc = c + d.c;
+
+                // Проверяем границы массива
                 if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
                     let neighbor = grid[nr][nc];
+
+                    // А) Если сосед — пустая земля
                     if (neighbor.type !== 'water' && neighbor.owner === null) {
-                        // Добавляем координаты в массив доступных (как строку для уникальности)
-                        const key = `${nr},${nc}`;
-                        if (!this.availableNeighbors) this.availableNeighbors = new Set();
-                        this.availableNeighbors.add(key);
+                        this.availableNeighbors.add(`${nr},${nc}`);
+                    }
+
+                    // Б) Если сосед — другой игрок (ВРАГ)
+                    if (neighbor.owner !== null && neighbor.owner !== this.id) {
+                        let enemyId = neighbor.owner;
+                        let enemyPlayer = players[enemyId];
+
+                        // Нам: добавляем клетку врага в наш список целей
+                        if (!this.enemyBorders.has(enemyId)) {
+                            this.enemyBorders.set(enemyId, new Set());
+                        }
+                        this.enemyBorders.get(enemyId).add(`${nr},${nc}`);
+
+                        // Врагу: добавляем нашу новую клетку в его список целей (чтобы он видел границу с нами)
+                        if (enemyPlayer) {
+                            if (!enemyPlayer.enemyBorders.has(this.id)) {
+                                enemyPlayer.enemyBorders.set(this.id, new Set());
+                            }
+                            enemyPlayer.enemyBorders.get(this.id).add(`${r},${c}`);
+                        }
                     }
                 }
             }
 
-            // Удаляем текущую захваченную клетку из списка доступных (если она там была)
-            if (this.availableNeighbors) this.availableNeighbors.delete(`${r},${c}`);
-
+            // 4. ЗАВЕРШЕНИЕ
+            this.availableNeighbors.delete(`${r},${c}`);
             this.markCenterDirty();
         }
 
@@ -903,6 +1091,9 @@
     }
 
     function updateAttackingTroopsBar() {
+        // Добавляем проверку на режим наблюдения
+        if (isSpectating) return;
+
         if (players[0]) {
             let attacking = 0;
             if (players[0].attacks) {
@@ -952,42 +1143,56 @@
     }
 
     function checkGameEnd() {
-        if (!gameStarted || gameEnded) return false;
+        // Если мы УЖЕ в режиме наблюдения, не нужно снова проверять смерть
+        if (!gameStarted || gameEnded || isSpectating) return false;
 
         let player = players[0];
+
+        // ПРОИГРЫШ
         if (!player || player.cells.length === 0) {
             gameEnded = true;
-            resultText.textContent = "ТЫ ПРОИГРАЛ!";
+            gameResultType = 'lose';
+            resultText.textContent = "ВАША ДЕРЖАВА ПАЛА!";
+            resultText.style.color = "#ff4444";
+
+            // Показываем "Перезапуск" и "Наблюдать"
             continueBtn.style.display = 'none';
-            restartBtn.style.display = 'block';
+            spectateBtn.style.display = 'inline-block';
+            restartBtn.style.display = 'inline-block';
             gameOverlay.style.display = 'flex';
             return true;
         }
 
-        let otherPlayersExist = false;
-        for (let i = 1; i < players.length; i++) {
-            if (players[i] && players[i].cells.length > 0) {
-                otherPlayersExist = true;
-                break;
-            }
-        }
+        // Проверка живых врагов
+        let otherPlayersExist = players.slice(1).some(p => p && p.cells.length > 0);
 
-        let playerLandPercent = (player.cells.length / totalLandCells) * 100;
-
+        // ПОБЕДА (врагов нет)
         if (!otherPlayersExist) {
             gameEnded = true;
-            resultText.textContent = "ТЫ ПОБЕДИЛ ВСЕХ!";
-            continueBtn.style.display = 'none';
-            restartBtn.style.display = 'block';
+            gameResultType = 'win';
+            resultText.textContent = "МИРОВОЕ ГОСПОДСТВО!";
+            resultText.style.color = "#ffd700";
+
+            // Показываем "Перезапуск" и "Продолжить"
+            continueBtn.style.display = 'inline-block';
+            spectateBtn.style.display = 'none';
+            restartBtn.style.display = 'inline-block';
             gameOverlay.style.display = 'flex';
             return true;
         }
 
-        if (playerLandPercent >= 80) {
+        // ПОБЕДА (80%)
+        let playerLandPercent = (player.cells.length / totalLandCells) * 100;
+        if (playerLandPercent >= 80 && !ignoreWin80) {
             gameEnded = true;
-            resultText.textContent = "ТЫ ПОБЕДИЛ! (80% территории)";
-            continueBtn.style.display = 'block';
-            restartBtn.style.display = 'block';
+            gameResultType = 'win80';
+            resultText.textContent = "ТЫ ПОБЕДИЛ! (80%)";
+            resultText.style.color = "#00ff88";
+
+            // Показываем "Перезапуск" и "Продолжить"
+            continueBtn.style.display = 'inline-block';
+            spectateBtn.style.display = 'none';
+            restartBtn.style.display = 'inline-block';
             gameOverlay.style.display = 'flex';
             return true;
         }
@@ -996,20 +1201,106 @@
     }
 
     function restartGame() {
+        console.log("Рестарт игры");
+        gameOverlay.style.display = 'none'; // Всегда скрываем
+
+        ignoreWin80 = false;
+        isSpectating = false;
+        gameResultType = '';
+
+        // Скрываем все кнопки на всякий случай
+        continueBtn.style.display = 'none';
+        spectateBtn.style.display = 'none';
+        // Скрываем оверлей
         gameOverlay.style.display = 'none';
+
+        // Сбрасываем все игровые состояния
         players = [];
         gameStarted = false;
         preStart = true;
         botSpawns = [];
         gameEnded = false;
+
+        // Восстанавливаем UI
+        slider.disabled = false;
+        canvas.style.cursor = "crosshair";
+
+        // Пересоздаем карту
         initMap();
+
+        // Сбрасываем камеру
+        centerMapOnScreen();
+
         statusEl.innerText = "ВЫБЕРИТЕ ТОЧКУ ДЕСАНТА";
+        statusEl.style.color = "#00ccff";
+
+        // Сбрасываем статистику
+        troopEl.innerText = "0";
+        limitEl.innerText = "Лимит: 0";
+        goldEl.innerText = "0";
+        landEl.innerText = "0";
+        attackTroopsInfo.textContent = "Войск в атаку: 0";
+
+        console.log("Игра перезапущена");
     }
 
+    // Функция продолжения игры
     function continueGame() {
-        gameOverlay.style.display = 'none';
-        gameEnded = false;
-        statusEl.innerText = "ПРОДОЛЖЕНИЕ ИГРЫ";
+        console.log("Кнопка Продолжить нажата, тип результата:", gameResultType);
+
+        // Проверяем, не было ли уже обработано это нажатие
+        if (gameEnded && (gameResultType === 'win80' || gameResultType === 'win')) {
+            ignoreWin80 = true;
+            gameOverlay.style.display = 'none';
+
+            gameEnded = false;
+            gameStarted = true;
+
+            // Меняем статус в зависимости от типа победы
+            if (gameResultType === 'win') {
+                statusEl.innerText = "МИРОВОЕ ГОСПОДСТВО ДОСТИГНУТО!";
+            } else {
+                statusEl.innerText = "ПОБЕДА! ДОБИВАЙ ОСТАТКИ ВРАГА";
+            }
+            statusEl.style.color = "#00ff88";
+
+            // Убедитесь, что UI работает
+            slider.disabled = false;
+            canvas.style.cursor = "crosshair";
+
+            console.log("Продолжение игры после победы");
+
+            // Сбрасываем gameResultType, чтобы предотвратить повторные срабатывания
+            gameResultType = '';
+        }
+    }
+
+    // Новая функция для кнопки "Наблюдать"
+    function spectateGame() {
+        console.log("Кнопка Наблюдать нажата");
+        gameOverlay.style.display = 'none'; // Всегда скрываем
+
+        isSpectating = true;
+        gameEnded = false; // Снимаем флаг окончания
+        gameStarted = true; // Игра продолжается
+        statusEl.innerText = "РЕЖИМ НАБЛЮДЕНИЯ";
+        statusEl.style.color = "#aaaaaa";
+
+        // Отключаем UI управления для игрока, но разрешаем перемещение камеры
+        slider.disabled = true;
+        canvas.style.cursor = "move"; // Меняем курсор на "перемещение"
+
+        // Сбрасываем UI игрока
+        troopEl.innerText = "0";
+        limitEl.innerText = "Лимит: 0";
+        goldEl.innerText = "0";
+        landEl.innerText = "0";
+        attackTroopsInfo.textContent = "Войск в атаку: 0";
+        attackProgressBar.style.width = "0%";
+        attackingTroopsFill.style.width = "0%";
+        attackingTroopsText.textContent = "В атаке: 0";
+
+        console.log("Включен режим наблюдения");
     }
 
     function updateHoverInfo() {
@@ -1036,49 +1327,49 @@
     }
     // ОБРАБОТКА захвата врага
     canvas.addEventListener('mousedown', (e) => {
-        // Преобразуем координаты клика с учетом камеры и зума
+        //проверка на наблюдателя
+        if (isSpectating) return;
+
         const rect = canvas.getBoundingClientRect();
-        const worldX = (e.clientX - rect.left - cam.x) / cam.zoom;
-        const worldY = (e.clientY - rect.top - cam.y) / cam.zoom;
+        const x = (e.clientX - rect.left - cam.x) / cam.zoom;
+        const y = (e.clientY - rect.top - cam.y) / cam.zoom;
+        const c = Math.floor(x / CELL_SIZE), r = Math.floor(y / CELL_SIZE);
 
-        const c = Math.floor(worldX / CELL_SIZE);
-        const r = Math.floor(worldY / CELL_SIZE);
+        if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return;
+        const cell = grid[r][c];
+        const p = players[0]; // Игрок
 
-        if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
-            const cell = grid[r][c];
-            const player = players[0]; // Ты — игрок с ID 0
-
-            // 1. Если игра еще не началась — ставим десант
-            if (preStart) {
-                player.capture(r, c);
+        // Если это первый клик игры (выбор десанта)
+        if (preStart) {
+            if (cell.type !== 'water') {
+                p.capture(r, c);
                 preStart = false;
-                gameStarted = true;
-                statusEl.innerText = "ВОЙНА НАЧАЛАСЬ!";
-                return;
+                statusEl.innerText = "ГЛОБАЛЬНАЯ ЭКСПАНСИЯ";
             }
+            return;
+        }
 
-            // 2. Если кликнули на врага — атакуем его
-            if (cell.owner !== null && cell.owner !== player.id) {
-                const enemyId = cell.owner;
-                const percent = parseInt(slider.value) / 100;
-                const attackBudget = player.troops * percent;
+        const attackPercent = slider.value / 100;
+        const cost = p.troops * attackPercent;
 
-                if (attackBudget > 10) {
-                    player.troops -= attackBudget;
-                    player.startAttack(enemyId, attackBudget);
-                    statusEl.innerText = `АТАКА НА ${players[enemyId].name.toUpperCase()}!`;
+        if (cell.owner !== null && cell.owner !== p.id) {
+            // --- ПРОВЕРКА ГРАНИЦЫ ПЕРЕД АТАКОЙ ---
+            const enemy = players[cell.owner];
+            const borders = p.findBorderCellsWithEnemy(enemy);
 
-                    // Визуальный эффект клика
-                    createClickRipple(e.clientX - rect.left, e.clientY - rect.top);
-                }
+            if (borders.length > 0) {
+                p.troops -= cost;
+                p.startAttack(enemy.id, cost);
+                statusEl.innerText = `АТАКА НА ${enemy.name.toUpperCase()}`;
+            } else {
+                statusEl.innerText = "НЕТ ОБЩЕЙ ГРАНИЦЫ ДЛЯ АТАКИ!";
+                // Эффект тряски или звука можно добавить тут
             }
-            // 3. Если кликнули на пустую землю — расширяемся туда
-            else if (cell.owner === null && cell.type !== 'water') {
-                const percent = parseInt(slider.value) / 100;
-                const expansionBudget = player.troops * percent;
-                player.troops -= expansionBudget;
-                player.expansionQueue += expansionBudget;
-            }
+        } else if (cell.owner === null && cell.type !== 'water') {
+            // Обычное расширение на пустую землю
+            p.troops -= cost;
+            p.expansionQueue += cost;
+            statusEl.innerText = "РАСШИРЕНИЕ ТЕРРИТОРИИ";
         }
     });
 
@@ -1103,19 +1394,25 @@
         }
 
         if (cam.isDrag) {
-            cam.x += e.clientX - cam.lx;
-            cam.y += e.clientY - cam.ly;
-            cam.d += Math.abs(e.clientX - cam.lx) + Math.abs(e.clientY - cam.ly);
+            let dx = e.clientX - cam.lx;
+            let dy = e.clientY - cam.ly;
+            cam.x += dx;
+            cam.y += dy;
             cam.lx = e.clientX;
             cam.ly = e.clientY;
-            e.preventDefault();
+            cam.d += Math.sqrt(dx*dx + dy*dy);
         }
     });
 
     window.addEventListener('mouseup', function(e) {
-        if (e.button !== 0 || gameEnded) return;
+        if (e.button !== 0 || gameEnded ) return;
 
         if (cam.isDrag && cam.d < 10) {
+            if (isSpectating) {  // игнор клика в наблюдении
+                cam.isDrag = false;  // Сброс, чтобы не "зажимало"
+                return;
+            }
+
             const rect = canvas.getBoundingClientRect();
             const wx = (e.clientX - rect.left - cam.x) / cam.zoom;
             const wy = (e.clientY - rect.top - cam.y) / cam.zoom;
@@ -1123,9 +1420,14 @@
             const r = Math.floor(wy / CELL_SIZE);
 
             if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+                if (isSpectating) return;  // игнорируем клики в наблюдении
+
                 if (preStart) {
                     start(r, c);
                 } else if (players[0]) {
+                    //проверка на наблюдателя
+                    if (isSpectating) return;
+
                     let p = players[0];
                     let cell = grid[r][c];
 
@@ -1188,13 +1490,58 @@
         e.preventDefault();
     });
 
+    canvas.addEventListener('click', (e) => {
+        // Если игра окончена и мы не в режиме наблюдения, клики не работают
+        if (gameEnded || isSpectating) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.clientX - rect.left - cam.x) / cam.zoom;
+        const y = (e.clientY - rect.top - cam.y) / cam.zoom;
+        const c = Math.floor(x / CELL_SIZE);
+        const r = Math.floor(y / CELL_SIZE);
+
+        if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return;
+
+        const cell = grid[r][c];
+        const p = players[0]; // Игрок всегда первый в массиве
+
+        // Исправление ошибки: проверяем, существует ли игрок
+        if (!p) return;
+
+        if (preStart) {
+            if (cell.type !== 'water') {
+                p.capture(r, c);
+                preStart = false;
+                gameStarted = true;
+                statusEl.innerText = "ГЛОБАЛЬНАЯ ЭКСПАНСИЯ";
+            }
+            return;
+        }
+
+        // Логика атаки игрока
+        if (cell.owner !== null && cell.owner !== 0) {
+            const targetId = cell.owner;
+            const percent = parseInt(slider.value);
+            const attackAmount = p.troops * (percent / 100);
+
+            if (attackAmount > 10) {
+                p.troops -= attackAmount;
+                // Создаем объект атаки
+                p.attacks.push({
+                    target: targetId,
+                    troops: attackAmount,
+                    initialTroops: attackAmount,
+                    progress: 1.0
+                });
+                statusEl.innerText = "ВОЙСКА ОТПРАВЛЕНЫ!";
+            }
+        }
+    });
+
     slider.addEventListener('input', function() {
         percentVal.innerText = slider.value;
         updateAttackTroopsInfo();
     });
-
-    restartBtn.addEventListener('click', restartGame);
-    continueBtn.addEventListener('click', continueGame);
 
     let frameCount = 0;
     function update() {
@@ -1202,7 +1549,9 @@
 
         updateHoverInfo();
 
+
         if (!checkGameEnd() && gameStarted) {
+
             for (let i = 0; i < players.length; i++) {
                 if (players[i]) {
                     players[i].update();
@@ -1281,16 +1630,101 @@
         // Это заменяет тысячи циклов и создание landCanvas, которые вызывали лаги
         ctx.drawImage(mapCanvas, 0, 0);
 
+        // === НАЗВАНИЕ ИГРЫ (движется вместе с картой) ===
+// === НАЗВАНИЕ ИГРЫ (красиво, читаемо, без переливов с морем) ===
+        ctx.save();
+
+        const titleText = "MapWars";
+        const titleX = (COLS * CELL_SIZE) / 2;
+        const titleY = 30;
+
+        ctx.font = `bold 60px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+
+// --- размеры текста ---
+        const metrics = ctx.measureText(titleText);
+        const paddingX = 28;
+        const paddingY = 14;
+        const bgWidth = metrics.width + paddingX * 2;
+        const bgHeight = 60 + paddingY * 2;
+
+// --- ТЁМНАЯ ПОДЛОЖКА (стабильная, без ряби) ---
+        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+        ctx.beginPath();
+        ctx.roundRect(
+            titleX - bgWidth / 2,
+            titleY - paddingY,
+            bgWidth,
+            bgHeight,
+            14
+        );
+        ctx.fill();
+
+        // --- обводка ---
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "rgba(16,29,48,0.8)";
+        ctx.strokeText(titleText, titleX, titleY);
+
+        // --- основной текст ---
+        ctx.fillStyle = "#179517";
+        ctx.fillText(titleText, titleX, titleY);
+
+        ctx.restore();
+
+
+
         // 3. Рисуем вспомогательные элементы (спавны ботов)
         if (preStart) {
-            botSpawns.forEach(s => {
+            ctx.save();
+
+            botSpawns.forEach((spawn, index) => {
+                const isAggro = index < 4;
+                const colorIndex = (index + 1) % COLORS.length;
+                const baseColor = COLORS[colorIndex];
+                const botName = NAMES[colorIndex] || `Бот ${index + 1}`;
+
+                const centerX = spawn.c * CELL_SIZE + CELL_SIZE / 2;
+                const centerY = spawn.r * CELL_SIZE + CELL_SIZE / 2;
+                const radius = 25;
+
                 ctx.beginPath();
-                ctx.arc(s.c * CELL_SIZE, s.r * CELL_SIZE, 25, 0, Math.PI * 2);
-                ctx.fillStyle = s.color;
-                ctx.globalAlpha = 0.3;
-                ctx.fill();
-                ctx.globalAlpha = 1;
+                ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+
+                if (isAggro) {
+                    // АГРЕССОР
+                    ctx.fillStyle = baseColor + "66"; // Заливка 40% яркости
+                    ctx.fill();
+
+                    ctx.setLineDash([]);
+                    ctx.strokeStyle = baseColor;
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+
+                    ctx.fillStyle = baseColor;
+                    ctx.font = "bold 12px Arial";
+                    ctx.textAlign = "center";
+                    ctx.shadowBlur = 4;
+                    ctx.shadowColor = "black";
+                    ctx.fillText(botName.toUpperCase(), centerX, centerY - radius - 8);
+                    ctx.shadowBlur = 0;
+                } else {
+                    // ПАССИВНЫЙ (Исправлено: добавлена заливка)
+                    ctx.fillStyle = baseColor + "33"; // Заливка 20% яркости (более тусклая)
+                    ctx.fill(); // <--- ОБЯЗАТЕЛЬНО вызвать для отображения цвета внутри
+
+                    ctx.setLineDash([5, 5]);
+                    ctx.strokeStyle = baseColor;
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+
+                    ctx.fillStyle = baseColor;
+                    ctx.font = "11px Arial";
+                    ctx.textAlign = "center";
+                    ctx.fillText(botName, centerX, centerY - radius - 5);
+                }
             });
+            ctx.restore();
         }
 
         // 4. Рисуем имена игроков и количество войск поверх карты
