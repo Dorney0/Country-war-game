@@ -226,6 +226,7 @@
             this.lastWaveTime = 0;
             this.lastExpansionTime = 0;
             this.lastUpdateTime = Date.now();
+            this.availableNeighbors = new Set(); // Используем Set, чтобы координаты не дублировались
         }
 
         markCenterDirty() {
@@ -246,13 +247,24 @@
             let sumX = 0;
             let sumY = 0;
 
-            for (const cell of this.cells) {
+            // ОПТИМИЗАЦИЯ: Мы хотим проверять не более 200-300 клеток,
+            const maxSamples = 200;
+
+            // Вычисляем шаг. Если клеток 10 000, шаг будет 50 (берем каждую 50-ю).
+            // Если клеток меньше 200, шаг будет 1 (берем все подряд).
+            const step = Math.max(1, Math.floor(this.cells.length / maxSamples));
+            let count = 0;
+
+            for (let i = 0; i < this.cells.length; i += step) {
+                const cell = this.cells[i];
                 sumX += cell.c;
                 sumY += cell.r;
+                count++;
             }
 
-            this.targetCenterX = (sumX / this.cells.length) * CELL_SIZE;
-            this.targetCenterY = (sumY / this.cells.length) * CELL_SIZE;
+            // Делим на реальное количество взятых проб (count), а не на длину всего массива
+            this.targetCenterX = (sumX / count) * CELL_SIZE;
+            this.targetCenterY = (sumY / count) * CELL_SIZE;
         }
 
 
@@ -330,48 +342,36 @@
             // Сбрасываем статус атаки
             this.isBeingAttacked = false;
 
+            const EXPANSION_DIRS = [
+                {r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1},
+                {r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}
+            ];
+
             // РАСШИРЕНИЕ НА СВОБОДНЫЕ ТЕРРИТОРИИ - УВЕЛИЧЕНА СКОРОСТЬ
-            if (this.expansionQueue > 0 && this.troops > 0) {
-                let expansionMultiplier = Math.min(this.expansionQueue / 1000, 10);
-                let expansionRate = Math.min(this.expansionQueue, this.troops * 0.3 * expansionMultiplier) * deltaTime;
+            if (this.expansionQueue > 0 && this.troops > 0 && this.availableNeighbors && this.availableNeighbors.size > 0) {
+                let expansionRate = Math.min(this.expansionQueue, 100) * deltaTime;
+                let successfulCaptures = 0;
 
-                let cellsCaptured = 0;
-                let maxCapturesPerFrame = 100;
+                // Превращаем Set в массив один раз за кадр для случайного выбора
+                let neighborsArray = Array.from(this.availableNeighbors);
 
-                for(let attempt = 0; attempt < expansionRate && cellsCaptured < maxCapturesPerFrame; attempt++) {
-                    if (this.cells.length === 0 || this.expansionQueue <= 0 || this.troops <= 0) break;
+                while (successfulCaptures < expansionRate && neighborsArray.length > 0) {
+                    // Берем случайную ГРАНИЧНУЮ клетку
+                    let randomIndex = Math.floor(Math.random() * neighborsArray.length);
+                    let coords = neighborsArray[randomIndex].split(',').map(Number);
+                    let nr = coords[0], nc = coords[1];
 
-                    let randomCell = this.cells[Math.floor(Math.random() * this.cells.length)];
-                    let directions = [
-                        {r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1},
-                        {r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}
-                    ];
-
-                    // Перемешиваем направления
-                    for (let i = directions.length - 1; i > 0; i--) {
-                        let j = Math.floor(Math.random() * (i + 1));
-                        [directions[i], directions[j]] = [directions[j], directions[i]];
+                    // Проверяем еще раз (на случай если кто-то другой уже захватил)
+                    if (grid[nr][nc].owner === null) {
+                        this.capture(nr, nc);
+                        successfulCaptures++;
+                        this.expansionQueue--;
+                        this.troops -= 0.05;
                     }
 
-                    for (let d of directions) {
-                        let nr = randomCell.r + d.r, nc = randomCell.c + d.c;
-                        if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                            let cell = grid[nr][nc];
-                            if (cell.type !== 'water' && cell.owner === null) {
-                                this.capture(nr, nc);
-                                cellsCaptured++;
-
-                                let cost = 0.05;
-                                this.troops -= cost;
-                                this.expansionQueue -= 1;
-
-                                break;
-                            }
-                        }
-                    }
+                    // Удаляем из локального списка, чтобы не пытаться захватить дважды за кадр
+                    neighborsArray.splice(randomIndex, 1);
                 }
-
-                this.lastExpansionTime = now;
             }
 
             // АТАКА НА ВРАГОВ (МНОЖЕСТВЕННЫЕ АТАКИ)
@@ -552,33 +552,25 @@
             if (!enemy || enemy.cells.length === 0) return [];
 
             let borderCells = [];
-            let checked = new Set();
-
-            // Ищем граничные клетки врага
-            // УВЕЛИЧИВАЕМ количество проверяемых клеток для более быстрого захвата
-            let sampleSize = Math.min(200, enemy.cells.length);
-            let step = Math.max(1, Math.floor(enemy.cells.length / sampleSize));
+            // Проверяем клетки врага, чтобы найти те, что граничат с нами
+            // Оптимизация: проверяем случайную выборку из клеток врага
+            const sampleSize = Math.min(500, enemy.cells.length);
+            const step = Math.max(1, Math.floor(enemy.cells.length / sampleSize));
 
             for (let i = 0; i < enemy.cells.length; i += step) {
                 let cell = enemy.cells[i];
-                const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1},
-                    {r:-1,c:-1},{r:-1,c:1},{r:1,c:-1},{r:1,c:1}];
+                const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
 
                 for (let d of dirs) {
                     let nr = cell.r + d.r, nc = cell.c + d.c;
                     if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
-                        // Проверяем, граничит ли клетка врага с нами
                         if (grid[nr][nc].owner === this.id) {
-                            let key = `${cell.r},${cell.c}`;
-                            if (!checked.has(key)) {
-                                borderCells.push({r: cell.r, c: cell.c});
-                                checked.add(key);
-                            }
+                            borderCells.push({r: cell.r, c: cell.c});
+                            break; // Эту клетку врага можно захватить, идем к следующей
                         }
                     }
                 }
             }
-
             return borderCells;
         }
 
@@ -658,49 +650,57 @@
         }
 
         capture(r, c) {
+            // Мгновенная позиция ника для первой клетки
+            if (this.cells.length === 0) {
+                this.nameX = (c + 0.5) * CELL_SIZE;
+                this.nameY = (r + 0.5) * CELL_SIZE - 20;
+                this.targetCenterX = (c + 0.5) * CELL_SIZE;
+                this.targetCenterY = (r + 0.5) * CELL_SIZE;
+                this.nameFixed = true;
+            }
+
             let cell = grid[r][c];
             let oldOwnerId = cell.owner;
-            let newOwnerId = this.id;
 
-            if (oldOwnerId === newOwnerId) return;
-
-            // 1. Обновляем карту контактов (связей между игроками)
-            updateNeighborContacts(r, c, oldOwnerId, newOwnerId);
-
-            // 2. Убираем клетку у старого владельца
+            // Оптимизированное удаление у старого владельца
             if (oldOwnerId !== null) {
                 let prev = players[oldOwnerId];
                 if (prev) {
-                    // Оптимизация: фильтрация массива — это O(N).
-                    // Если игра начнет тормозить, позже заменим массив cells на Set.
-                    prev.cells = prev.cells.filter(i => i.r !== r || i.c !== c);
-                    if (prev.cells.length === 0) {
-                        // Игрок побежден
-                        players[prev.id] = null;
+                    const idx = prev.cells.findIndex(i => i.r === r && i.c === c);
+                    if (idx !== -1) {
+                        prev.cells[idx] = prev.cells[prev.cells.length - 1];
+                        prev.cells.pop();
                     }
                 }
             }
 
-            // 3. Назначаем нового владельца
-            cell.owner = newOwnerId;
+            cell.owner = this.id;
             this.cells.push({r, c});
-            // Красим пиксель на буфере
+
+            // Рисуем на карте
             mapCtx.fillStyle = this.color;
             mapCtx.fillRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            // 4. Сбрасываем кэши и обновляем центр
-            this.borderCache.clear();
-            this.markCenterDirty();
 
-            // Логика установки начального положения ника
-            if (!this.nameFixed) {
-                this.nameX = (c + 0.5) * CELL_SIZE;
-                this.nameY = (r - 0.3) * CELL_SIZE;
-                this.nameFixed = true;
-                this.centerX = this.nameX;
-                this.centerY = this.nameY;
-                this.targetCenterX = this.nameX;
-                this.targetCenterY = this.nameY;
+            // ОБНОВЛЯЕМ СПИСОК ДОСТУПНЫХ ДЛЯ ЗАХВАТА КЛЕТОК
+            // Проверяем соседей новой захваченной клетки
+            const dirs = [{r:-1,c:0},{r:1,c:0},{r:0,c:-1},{r:0,c:1}];
+            for (let d of dirs) {
+                let nr = r + d.r, nc = c + d.c;
+                if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+                    let neighbor = grid[nr][nc];
+                    if (neighbor.type !== 'water' && neighbor.owner === null) {
+                        // Добавляем координаты в массив доступных (как строку для уникальности)
+                        const key = `${nr},${nc}`;
+                        if (!this.availableNeighbors) this.availableNeighbors = new Set();
+                        this.availableNeighbors.add(key);
+                    }
+                }
             }
+
+            // Удаляем текущую захваченную клетку из списка доступных (если она там была)
+            if (this.availableNeighbors) this.availableNeighbors.delete(`${r},${c}`);
+
+            this.markCenterDirty();
         }
 
         updateNamePosition(deltaTime) {
@@ -1034,6 +1034,53 @@
         }
         lastHoverUpdate = Date.now();
     }
+    // ОБРАБОТКА захвата врага
+    canvas.addEventListener('mousedown', (e) => {
+        // Преобразуем координаты клика с учетом камеры и зума
+        const rect = canvas.getBoundingClientRect();
+        const worldX = (e.clientX - rect.left - cam.x) / cam.zoom;
+        const worldY = (e.clientY - rect.top - cam.y) / cam.zoom;
+
+        const c = Math.floor(worldX / CELL_SIZE);
+        const r = Math.floor(worldY / CELL_SIZE);
+
+        if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+            const cell = grid[r][c];
+            const player = players[0]; // Ты — игрок с ID 0
+
+            // 1. Если игра еще не началась — ставим десант
+            if (preStart) {
+                player.capture(r, c);
+                preStart = false;
+                gameStarted = true;
+                statusEl.innerText = "ВОЙНА НАЧАЛАСЬ!";
+                return;
+            }
+
+            // 2. Если кликнули на врага — атакуем его
+            if (cell.owner !== null && cell.owner !== player.id) {
+                const enemyId = cell.owner;
+                const percent = parseInt(slider.value) / 100;
+                const attackBudget = player.troops * percent;
+
+                if (attackBudget > 10) {
+                    player.troops -= attackBudget;
+                    player.startAttack(enemyId, attackBudget);
+                    statusEl.innerText = `АТАКА НА ${players[enemyId].name.toUpperCase()}!`;
+
+                    // Визуальный эффект клика
+                    createClickRipple(e.clientX - rect.left, e.clientY - rect.top);
+                }
+            }
+            // 3. Если кликнули на пустую землю — расширяемся туда
+            else if (cell.owner === null && cell.type !== 'water') {
+                const percent = parseInt(slider.value) / 100;
+                const expansionBudget = player.troops * percent;
+                player.troops -= expansionBudget;
+                player.expansionQueue += expansionBudget;
+            }
+        }
+    });
 
     // ОБРАБОТКА МЫШИ
     canvas.addEventListener('mousedown', function(e) {
